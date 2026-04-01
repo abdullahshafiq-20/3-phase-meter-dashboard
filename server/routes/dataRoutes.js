@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import {
   getHistorical,
+  getRecentReadings,
   getRange,
   getSummary,
   getConsumption,
@@ -11,6 +12,7 @@ const router = Router();
 
 // Historical (CSV-backed)
 router.get('/:deviceId/historical', getHistorical);
+router.get('/:deviceId/historical/recent', getRecentReadings);
 router.get('/:deviceId/historical/range', getRange);
 router.get('/:deviceId/historical/summary', getSummary);
 router.get('/:deviceId/historical/consumption', getConsumption);

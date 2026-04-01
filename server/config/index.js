@@ -18,6 +18,8 @@ export const config = {
   usersConfigPath:
     process.env.USERS_CONFIG_PATH || path.join(serverRoot, 'users.config.json'),
   nominalVoltage: parseNumber(process.env.NOMINAL_VOLTAGE, 230),
+  /** Per-phase ampacity reference for alerts / UI (not from CSV). */
+  ratedPhaseAmps: parseNumber(process.env.RATED_PHASE_CURRENT_A, 100),
   liveTickMs: parseNumber(process.env.LIVE_TICK_MS, 10000),
   jwt: {
     secret: process.env.JWT_SECRET || 'change-me-in-env',

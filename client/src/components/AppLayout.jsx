@@ -2,7 +2,7 @@ import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useDevice } from '../context/DeviceContext';
 import {
-  LayoutDashboard, BarChart3, Radio, Lightbulb, Shield, LogOut, Zap, ChevronDown, Menu, X
+  LayoutDashboard, BarChart3, Radio, Lightbulb, Bell, Shield, LogOut, Zap, ChevronDown, Menu, X
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -11,6 +11,7 @@ const navItems = [
   { to: '/historical', label: 'Historical', icon: BarChart3 },
   { to: '/live', label: 'Live View', icon: Radio },
   { to: '/insights', label: 'Insights', icon: Lightbulb },
+  { to: '/alerts', label: 'Alerts', icon: Bell },
 ];
 
 const adminItems = [

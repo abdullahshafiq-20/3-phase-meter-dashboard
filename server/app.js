@@ -10,6 +10,7 @@ import authRoutes from './routes/authRoutes.js';
 import deviceRoutes from './routes/deviceRoutes.js';
 import dataRoutes from './routes/dataRoutes.js';
 import insightRoutes from './routes/insightRoutes.js';
+import alertRoutes from './routes/alertRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import { liveDataService } from './services/liveDataService.js';
@@ -39,6 +40,7 @@ app.use(authenticateAccessToken);
 app.use('/devices', deviceRoutes);
 app.use('/data', dataRoutes);
 app.use('/insights', insightRoutes);
+app.use('/alerts', alertRoutes);
 app.use('/dashboard', dashboardRoutes);
 app.use('/admin', adminRoutes);
 

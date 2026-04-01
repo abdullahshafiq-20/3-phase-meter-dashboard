@@ -12,6 +12,7 @@ import DashboardPage from './pages/DashboardPage';
 import HistoricalPage from './pages/HistoricalPage';
 import LivePage from './pages/LivePage';
 import InsightsPage from './pages/InsightsPage';
+import AlertsPage from './pages/AlertsPage';
 import AdminPage from './pages/AdminPage';
 
 function App() {
@@ -28,7 +29,9 @@ function App() {
             element={
               <ProtectedRoute>
                 <DeviceProvider>
-                  <AppLayout />
+                  <LiveProvider>
+                    <AppLayout />
+                  </LiveProvider>
                 </DeviceProvider>
               </ProtectedRoute>
             }
@@ -50,14 +53,7 @@ function App() {
                   </HistoricalProvider>
                 }
               />
-              <Route
-                path="live"
-                element={
-                  <LiveProvider>
-                    <LivePage />
-                  </LiveProvider>
-                }
-              />
+              <Route path="live" element={<LivePage />} />
               <Route
                 path="insights"
                 element={
@@ -66,6 +62,7 @@ function App() {
                   </InsightsProvider>
                 }
               />
+              <Route path="alerts" element={<AlertsPage />} />
 
               {/* Admin-only route */}
               <Route

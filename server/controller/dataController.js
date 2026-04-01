@@ -13,6 +13,16 @@ export const getHistorical = (req, res) => {
   }
 };
 
+export const getRecentReadings = (req, res) => {
+  try {
+    const { limit } = req.query;
+    const result = csvDataService.getRecentReadings(req.params.deviceId, limit);
+    return sendSuccess(res, result, 'Recent readings retrieved');
+  } catch (err) {
+    return sendError(res, err.message, err.statusCode || 500);
+  }
+};
+
 export const getRange = (req, res) => {
   try {
     const { from, to } = req.query;

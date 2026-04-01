@@ -1,15 +1,19 @@
+import { useEffect, useMemo, useState } from 'react';
 import { useDevice } from '../context/DeviceContext';
 import { useInsights } from '../context/InsightsContext';
+import { api } from '../services/api';
+import { InsightMiniChart, InsightHourlyBarChart, percentileHighAp } from '../components/InsightMiniChart';
 import {
   TrendingUp, DollarSign, Gauge, AlertTriangle, Zap, Radio, Activity, BarChart3, Waves, Target
 } from 'lucide-react';
 
-function InsightCard({ title, icon: Icon, color = '#00e5ff', loading, children }) {
+function InsightCard({ title, icon, color = '#00e5ff', loading, children }) {
+  const SvgIcon = icon;
   return (
     <div className="glass-panel glass-panel-hover p-5 animate-fade-in">
       <div className="flex items-center gap-2 mb-4">
         <div className="p-1.5 rounded-lg" style={{ backgroundColor: `${color}15` }}>
-          <Icon size={16} style={{ color }} />
+          <SvgIcon size={16} style={{ color }} />
         </div>
         <h3 className="text-sm font-semibold text-slate-900">{title}</h3>
       </div>
@@ -34,6 +38,15 @@ function MetricRow({ label, value, unit, warn }) {
   );
 }
 
+function percentileHighByKey(rows, key, p = 0.92) {
+  const vals = rows.map((r) => r[key]).filter((v) => Number.isFinite(v));
+  if (!vals.length) return () => false;
+  const sorted = [...vals].sort((a, b) => a - b);
+  const idx = Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p));
+  const thr = sorted[idx];
+  return (r) => Number.isFinite(r[key]) && r[key] >= thr;
+}
+
 export default function InsightsPage() {
   const { selectedDevice } = useDevice();
   const {
@@ -44,6 +57,36 @@ export default function InsightsPage() {
     ratedCapacity,
     setRatedCapacity
   } = useInsights();
+
+  const [recent, setRecent] = useState([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getRecentReadings(selectedDevice, 520);
+        const rows = res.data?.data ?? [];
+        if (!cancelled) setRecent(rows);
+      } catch (e) {
+        console.error(e);
+        if (!cancelled) setRecent([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDevice]);
+
+  const anomalyTimeMs = useMemo(() => {
+    const ev = insights.anomalies?.events;
+    if (!ev?.length) return new Set();
+    return new Set(ev.map((e) => new Date(e.timestamp).getTime()));
+  }, [insights.anomalies]);
+
+  const highAp = useMemo(() => percentileHighAp(recent, 0.92), [recent]);
+  const highRp = useMemo(() => percentileHighByKey(recent, 'rp', 0.9), [recent]);
+
+  const peakTs = insights.peakDemand?.timestamp;
 
   return (
     <div className="space-y-6">
@@ -59,6 +102,15 @@ export default function InsightsPage() {
           {insights.peakDemand && <>
             <MetricRow label="Peak Active Power" value={insights.peakDemand.peakApW?.toLocaleString()} unit="W" />
             <MetricRow label="Timestamp" value={new Date(insights.peakDemand.timestamp).toLocaleString()} />
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="ap"
+                color="#ffab00"
+                yLabel="W"
+                highlight={(r) => (peakTs != null && r.bucket === peakTs) || highAp(r)}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -73,6 +125,15 @@ export default function InsightsPage() {
             <MetricRow label="Consumed" value={insights.energyCost.consumedKwh?.toFixed(2)} unit="kWh" />
             <MetricRow label="Total Cost" value={`$${insights.energyCost.totalCost?.toFixed(2)}`} />
             <p className="text-[10px] text-grid-500 mt-2">{new Date(insights.energyCost.periodStart).toLocaleDateString()} → {new Date(insights.energyCost.periodEnd).toLocaleDateString()}</p>
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="e"
+                color="#00e676"
+                yLabel="kWh"
+                highlight={(r) => highAp(r)}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -83,6 +144,14 @@ export default function InsightsPage() {
             <MetricRow label="Min PF" value={insights.powerFactor.minPf?.toFixed(4)} warn={insights.powerFactor.minPf < 0.85} />
             <MetricRow label="Max PF" value={insights.powerFactor.maxPf?.toFixed(4)} />
             <MetricRow label="Low PF Events (<0.85)" value={insights.powerFactor.lowPfCount} warn={insights.powerFactor.lowPfCount > 0} />
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="pf"
+                color="#00e5ff"
+                highlight={(r) => r.pf < 0.85}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -92,6 +161,15 @@ export default function InsightsPage() {
             <MetricRow label="Avg Imbalance" value={`${insights.phaseImbalance.avgImbalancePercent?.toFixed(2)}%`} />
             <MetricRow label="Max Imbalance" value={`${insights.phaseImbalance.maxImbalancePercent?.toFixed(2)}%`} warn={insights.phaseImbalance.maxImbalancePercent > 10} />
             <MetricRow label="High Imbalance Events (>10%)" value={insights.phaseImbalance.highImbalanceCount} warn={insights.phaseImbalance.highImbalanceCount > 0} />
+            {insights.phaseImbalance.timeline?.length > 0 && (
+              <InsightMiniChart
+                series={insights.phaseImbalance.timeline}
+                yKey="imbalancePercent"
+                color="#7c4dff"
+                yLabel="%"
+                highlight={(r) => r.imbalancePercent > 10}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -106,6 +184,24 @@ export default function InsightsPage() {
                 warn={Math.abs(insights.voltageStability[phase]?.avg - insights.voltageStability.nominalVoltage) > 10}
               />
             ))}
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent.map((r) => ({
+                  bucket: r.bucket,
+                  vavg: (r.va + r.vb + r.vc) / 3
+                }))}
+                yKey="vavg"
+                color="#ff9100"
+                yLabel="V"
+                highlight={(r) => {
+                  const row = recent.find((x) => x.bucket === r.bucket);
+                  if (!row) return false;
+                  const v = [row.va, row.vb, row.vc];
+                  const spread = Math.max(...v) - Math.min(...v);
+                  return spread > 10 || Math.min(...v) < 210 || Math.max(...v) > 245;
+                }}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -115,6 +211,15 @@ export default function InsightsPage() {
             <MetricRow label="Avg Reactive Power" value={insights.reactivePower.avgRp?.toFixed(2)} unit="VAR" />
             <MetricRow label="Max Reactive Power" value={insights.reactivePower.maxRp?.toFixed(2)} unit="VAR" />
             <MetricRow label="High Load Periods" value={insights.reactivePower.highReactivePeriods?.length || 0} warn={(insights.reactivePower.highReactivePeriods?.length || 0) > 10} />
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="rp"
+                color="#ff1744"
+                yLabel="VAR"
+                highlight={(r) => highRp(r) || (Number.isFinite(r.pf) && r.pf < 0.85 && r.rp > (r.ap || 0) * 0.2)}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -125,6 +230,15 @@ export default function InsightsPage() {
             <MetricRow label="Std Dev" value={insights.frequencyStability.stdDevFrequency?.toFixed(4)} unit="Hz" />
             <MetricRow label="Min / Max" value={`${insights.frequencyStability.minFrequency} / ${insights.frequencyStability.maxFrequency}`} unit="Hz" />
             <MetricRow label="Out of Band (±0.2Hz)" value={insights.frequencyStability.outOfBandCount} warn={insights.frequencyStability.outOfBandCount > 0} />
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="f"
+                color="#00bcd4"
+                yLabel="Hz"
+                highlight={(r) => r.f < 49.5 || r.f > 50.5 || Math.abs(r.f - 50) > 0.2}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -135,6 +249,15 @@ export default function InsightsPage() {
             {insights.anomalies.summary && Object.entries(insights.anomalies.summary).map(([type, count]) => (
               <MetricRow key={type} label={type.replace(/_/g, ' ')} value={count} warn={count > 10} />
             ))}
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="ap"
+                color="#ff1744"
+                yLabel="W"
+                highlight={(r) => anomalyTimeMs.has(new Date(r.bucket).getTime()) || highAp(r)}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -148,6 +271,15 @@ export default function InsightsPage() {
             {insights.loadProfile.top5DemandMoments?.map((m, i) => (
               <MetricRow key={i} label={new Date(m.timestamp).toLocaleString()} value={m.ap?.toFixed(0)} unit="W" />
             ))}
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="ap"
+                color="#ffab00"
+                yLabel="W"
+                highlight={(r) => highAp(r)}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -158,6 +290,15 @@ export default function InsightsPage() {
             <MetricRow label="Max THD" value={`${insights.harmonicDistortion.maxThdPercent?.toFixed(2)}%`} warn={insights.harmonicDistortion.maxThdPercent > 20} />
             <MetricRow label="High THD Periods (>20%)" value={insights.harmonicDistortion.highThdPeriods} warn={insights.harmonicDistortion.highThdPeriods > 0} />
             <p className="text-[10px] text-grid-500 mt-2 italic">{insights.harmonicDistortion.note}</p>
+            {insights.harmonicDistortion.timeline?.length > 0 && (
+              <InsightMiniChart
+                series={insights.harmonicDistortion.timeline}
+                yKey="thdEstimatePercent"
+                color="#e040fb"
+                yLabel="%"
+                highlight={(r) => r.thdEstimatePercent > 20}
+              />
+            )}
           </>}
         </InsightCard>
 
@@ -174,6 +315,7 @@ export default function InsightsPage() {
               value={insights.dailyLoadCurve.offPeakHourUTC == null ? '—' : `${String(insights.dailyLoadCurve.offPeakHourUTC).padStart(2, '0')}:00`}
             />
             <MetricRow label="Off-Peak Avg Demand" value={insights.dailyLoadCurve.offPeakAvgDemandW?.toFixed(1)} unit="W" />
+            <InsightHourlyBarChart dailyLoadCurve={insights.dailyLoadCurve} />
           </>}
         </InsightCard>
 
@@ -189,6 +331,15 @@ export default function InsightsPage() {
             <MetricRow label="Avg Utilization" value={`${insights.capacityUtilization.avgUtilizationPercent}%`} />
             <MetricRow label="Peak Utilization" value={`${insights.capacityUtilization.peakUtilizationPercent}%`} warn={insights.capacityUtilization.peakUtilizationPercent > 100} />
             <MetricRow label="Over-Capacity Events" value={insights.capacityUtilization.overCapacityEvents} warn={insights.capacityUtilization.overCapacityEvents > 0} />
+            {recent.length > 0 && (
+              <InsightMiniChart
+                series={recent}
+                yKey="ap"
+                color="#00e676"
+                yLabel="W"
+                highlight={(r) => Number.isFinite(r.ap) && r.ap >= ratedCapacity * 0.85}
+              />
+            )}
           </>}
         </InsightCard>
       </div>

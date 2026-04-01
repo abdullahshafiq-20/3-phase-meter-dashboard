@@ -1,17 +1,19 @@
 import { useMemo, useId } from 'react';
 import { useDevice } from '../context/DeviceContext';
 import { useDashboard } from '../context/DashboardContext';
+import { useLive } from '../context/LiveContext';
 import { Zap, TrendingUp, Gauge, Clock, Activity, BarChart3, AlertTriangle } from 'lucide-react';
 import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from 'recharts';
 
-function StatCard({ icon: Icon, label, value, unit, accent = '#0ea5e9', delay = 0 }) {
+function StatCard({ icon, label, value, unit, accent = '#0ea5e9', delay = 0 }) {
+  const SvgIcon = icon;
   const display =
     value === null || value === undefined || value === '' ? '—' : value;
   return (
     <div className="glass-panel glass-panel-hover p-5 animate-slide-up" style={{ animationDelay: `${delay}ms` }}>
       <div className="flex items-start justify-between mb-3">
         <div className="p-2 rounded-lg" style={{ backgroundColor: `${accent}20` }}>
-          <Icon size={18} style={{ color: accent }} />
+          <SvgIcon size={18} style={{ color: accent }} />
         </div>
       </div>
       <p className="text-[10px] uppercase tracking-widest text-grid-400 font-semibold mb-1">{label}</p>
@@ -59,6 +61,7 @@ const fmtUtcTimestamp = (iso) => {
 export default function DashboardPage() {
   const { selectedDevice } = useDevice();
   const { dashboard: data, loading, error, devicesLoading } = useDashboard();
+  const { current: liveStream, connected: liveConnected } = useLive();
   const gradId = useId().replace(/:/g, '');
 
   const recentChartData = useMemo(() => {
@@ -112,7 +115,8 @@ export default function DashboardPage() {
 
   if (!data) return <p className="text-grid-400">No data available.</p>;
 
-  const { summary, dailyConsumption, liveReading, deviceInfo } = data;
+  const { summary, dailyConsumption, liveReading: snapshotLive, deviceInfo } = data;
+  const liveReading = liveStream ?? snapshotLive;
   const peakDemandW =
     summary?.peakDemandW != null ? Number(summary.peakDemandW) : null;
   const peakDisplay =
@@ -130,9 +134,19 @@ export default function DashboardPage() {
             {selectedDevice} &middot; {deviceInfo?.totalReadings?.toLocaleString()} readings
           </p>
         </div>
-        <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-green-ok/10 border border-green-ok/20">
-          <span className="w-2 h-2 rounded-full bg-green-ok animate-pulse-glow" />
-          <span className="text-xs font-semibold text-green-ok">LIVE</span>
+        <div
+          className={`flex items-center gap-2 px-3 py-1.5 rounded-lg border ${
+            liveConnected
+              ? 'bg-green-ok/10 border-green-ok/20'
+              : 'bg-amber-500/10 border-amber-500/25'
+          }`}
+        >
+          <span
+            className={`w-2 h-2 rounded-full ${liveConnected ? 'bg-green-ok animate-pulse-glow' : 'bg-amber-500'}`}
+          />
+          <span className={`text-xs font-semibold ${liveConnected ? 'text-green-ok' : 'text-amber-800'}`}>
+            {liveConnected ? 'Live stream' : 'Connecting…'}
+          </span>
         </div>
       </div>
 
@@ -171,6 +185,11 @@ export default function DashboardPage() {
       <div className="glass-panel p-6 animate-slide-up" style={{ animationDelay: '200ms' }}>
         <h3 className="text-sm font-semibold text-grid-400 uppercase tracking-wider mb-4 flex items-center gap-2">
           <Activity size={16} className="text-cyan-electric" /> Live Phase Readings
+          {!liveConnected && (
+            <span className="text-[10px] font-normal normal-case text-amber-700 bg-amber-500/10 px-2 py-0.5 rounded-md">
+              Stream starting… (showing last snapshot until connected)
+            </span>
+          )}
         </h3>
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {/* Voltage */}

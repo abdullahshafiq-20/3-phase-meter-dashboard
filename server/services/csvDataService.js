@@ -12,6 +12,52 @@ const toNum = (value) => {
 
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
 
+/**
+ * Normalizes one telemetry_export / TCMData row to the same shape used everywhere
+ * (matches the CSV stream `data` handler — ap reconstruction, PF clamp, types).
+ * Safe to call on rows already normalized (idempotent for typical values).
+ * @param {Record<string, unknown>} row
+ */
+export const normalizeTelemetryExportRow = (row) => {
+  const ca = toNum(row.ca);
+  const cb = toNum(row.cb);
+  const cc = toNum(row.cc);
+  const va = toNum(row.va);
+  const vb = toNum(row.vb);
+  const vc = toNum(row.vc);
+  const rawPf = clamp(toNum(row.pf), -1, 1);
+  const pf = Math.abs(rawPf);
+  let ap = toNum(row.ap);
+
+  if (ap === 0 && pf > 0) {
+    const apparentPower = va * ca + vb * cb + vc * cc;
+    if (apparentPower > 0) {
+      ap = Number((apparentPower * pf).toFixed(3));
+    }
+  }
+
+  const bucketRaw = row.bucket;
+  const bucket =
+    bucketRaw instanceof Date ? bucketRaw.toISOString() : new Date(String(bucketRaw)).toISOString();
+
+  return {
+    bucket,
+    deviceid: String(row.deviceid ?? (row.deviceId ?? '')),
+    datatype: row.datatype != null ? String(row.datatype) : 'TCMData',
+    e: toNum(row.e),
+    f: toNum(row.f),
+    ap,
+    ca,
+    cb,
+    cc,
+    pf,
+    rp: toNum(row.rp),
+    va,
+    vb,
+    vc
+  };
+};
+
 let records = [];
 const byDevice = new Map();
 
@@ -31,41 +77,7 @@ const initialize = () =>
       );
 
     parser.on('data', (row) => {
-      const ca = toNum(row.ca);
-      const cb = toNum(row.cb);
-      const cc = toNum(row.cc);
-      const va = toNum(row.va);
-      const vb = toNum(row.vb);
-      const vc = toNum(row.vc);
-      const rawPf = clamp(toNum(row.pf), -1, 1);
-      const pf = Math.abs(rawPf);
-      let ap = toNum(row.ap);
-
-      // Telemetry exports may report ap as 0 (0E-20) even when V/I/PF are valid.
-      // Derive active power from per-phase apparent power: P = (Va*Ia + Vb*Ib + Vc*Ic) * |PF|
-      if (ap === 0 && pf > 0) {
-        const apparentPower = va * ca + vb * cb + vc * cc;
-        if (apparentPower > 0) {
-          ap = Number((apparentPower * pf).toFixed(3));
-        }
-      }
-
-      rows.push({
-        bucket: new Date(row.bucket).toISOString(),
-        deviceid: String(row.deviceid),
-        datatype: row.datatype,
-        e: toNum(row.e),
-        f: toNum(row.f),
-        ap,
-        ca,
-        cb,
-        cc,
-        pf,
-        rp: toNum(row.rp),
-        va,
-        vb,
-        vc
-      });
+      rows.push(normalizeTelemetryExportRow(row));
     });
 
     parser.on('error', (err) => {
@@ -117,6 +129,17 @@ const getHistorical = (deviceId, page = 1, limit = 50) => {
     total: data.length,
     totalPages: Math.ceil(data.length / l),
     data: paged
+  };
+};
+
+const getRecentReadings = (deviceId, limit = 400) => {
+  const data = getDeviceReadings(deviceId);
+  const l = Math.min(2000, Math.max(1, Number(limit) || 400));
+  const slice = data.slice(-l);
+  return {
+    limit: l,
+    total: data.length,
+    data: slice
   };
 };
 
@@ -180,10 +203,12 @@ const getConsumption = (deviceId, interval = 'hourly') => {
 
 export const csvDataService = {
   initialize,
+  normalizeTelemetryExportRow,
   getDeviceReadings,
   getDevices,
   getDeviceInfo,
   getHistorical,
+  getRecentReadings,
   getRange,
   getSummary,
   getConsumption
@@ -196,6 +221,7 @@ export {
   getDevices,
   getDeviceInfo,
   getHistorical,
+  getRecentReadings,
   getRange,
   getSummary,
   getConsumption

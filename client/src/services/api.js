@@ -130,6 +130,8 @@ export const api = {
   getDashboard: (id) => request(`/dashboard/${id}`),
   getHistorical: (id, page = 1, limit = 50) =>
     request(`/data/${id}/historical?page=${page}&limit=${limit}`),
+  getRecentReadings: (id, limit = 400) =>
+    request(`/data/${id}/historical/recent?limit=${limit}`),
   getRange: (id, from, to) => {
     const params = new URLSearchParams();
     if (from) params.set('from', from);
@@ -169,6 +171,19 @@ export const api = {
         ratedCapacity ? `?ratedCapacity=${ratedCapacity}` : ''
       }`
     ),
+  getAlertsTimeline: (id, opts = {}) => {
+    const q = new URLSearchParams();
+    if (opts.from) q.set('from', opts.from);
+    if (opts.to) q.set('to', opts.to);
+    if (opts.limit) q.set('limit', String(opts.limit));
+    if (opts.ratedCapacity != null) q.set('ratedCapacity', String(opts.ratedCapacity));
+    const qs = q.toString();
+    return request(`/alerts/${id}/timeline${qs ? `?${qs}` : ''}`);
+  },
+  getAlertsLive: (id, ratedCapacity) => {
+    const q = ratedCapacity != null ? `?ratedCapacity=${ratedCapacity}` : '';
+    return request(`/alerts/${id}/live${q}`);
+  },
   getUsers: () => request('/admin/users'),
   getSystemStatus: () => request('/admin/status'),
   reloadCsv: () => request('/admin/reload-csv', { method: 'POST' })

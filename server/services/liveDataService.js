@@ -1,5 +1,5 @@
 import { config } from '../config/index.js';
-import { getDeviceReadings } from './csvDataService.js';
+import { getDeviceReadings, normalizeTelemetryExportRow } from './csvDataService.js';
 
 const jitter = (base, spread) => base + (Math.random() * 2 - 1) * spread;
 const clamp = (value, min, max) => Math.max(min, Math.min(max, value));
@@ -9,10 +9,10 @@ const deviceState = new Map();
 const ensureState = (deviceId) => {
   if (deviceState.has(deviceId)) return deviceState.get(deviceId);
   const baseline = getDeviceReadings(deviceId).at(-1);
-  const state = {
+  const state = normalizeTelemetryExportRow({
     ...baseline,
     bucket: new Date().toISOString()
-  };
+  });
   deviceState.set(deviceId, state);
   return state;
 };
@@ -61,8 +61,9 @@ const nextLiveReading = (deviceId) => {
     vc: Number(vc.toFixed(3))
   };
 
-  deviceState.set(deviceId, next);
-  return next;
+  const normalized = normalizeTelemetryExportRow(next);
+  deviceState.set(deviceId, normalized);
+  return normalized;
 };
 
 const getLatestLiveReading = (deviceId) => nextLiveReading(deviceId);

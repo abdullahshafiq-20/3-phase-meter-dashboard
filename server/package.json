@@ -1,0 +1,32 @@
+{
+  "name": "3-phase-meter-dashboard",
+  "version": "1.0.0",
+  "description": "Three phase meter monitoring backend",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "lint": "node -e \"console.log('No linter configured')\""
+  },
+  "keywords": [
+    "express",
+    "jwt",
+    "power-meter"
+  ],
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "bcryptjs": "^3.0.2",
+    "cors": "^2.8.6",
+    "csv-parse": "^5.6.0",
+    "dotenv": "^17.3.1",
+    "express": "^5.2.1",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.1",
+    "winston": "^3.19.0",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

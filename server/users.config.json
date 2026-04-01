@@ -1,0 +1,19 @@
+{
+  "users": [
+    {
+      "username": "admin",
+      "passwordHash": "$2b$10$f0HbJLuoj0InjskEF/DRrOJmWFGERKZQ4n2T05Lwl6badkhCkK3vK",
+      "role": "admin"
+    },
+    {
+      "username": "viewer1",
+      "passwordHash": "$2b$10$77lL9ZPCr40lgR6eMfPKieBYybzPzs9XNtKF46yCbbp/z2860Z5Be",
+      "role": "viewer"
+    },
+    {
+      "username": "viewer2",
+      "passwordHash": "$2b$10$77lL9ZPCr40lgR6eMfPKieBYybzPzs9XNtKF46yCbbp/z2860Z5Be",
+      "role": "viewer"
+    }
+  ]
+}

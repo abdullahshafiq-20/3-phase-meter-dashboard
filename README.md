@@ -120,7 +120,15 @@ Thresholds include: frequency **49.5–50.5 Hz**; voltage per phase **210–245 
 
 ## Deployment & Sample Data Considerations
 
-> **NOTE:** By default, sample data is used (`sample-readings.csv`) for the sake of easily deploying the app locally with a small footprint. 
+### Hosted deployment (DigitalOcean)
+
+[LIVE ACCESS HERE](https://3-phase-meter-dashboard.vercel.app/)
+
+The application is deployed with the **backend running on DigitalOcean** in a **managed, serverless-style app service** environment (hosted service model rather than a long-running VPS you manage by hand). That setup favors a small artifact, predictable memory use, and simple operations.
+
+For that deployment, telemetry is intentionally **not** loaded from the real multi-hundred-megabyte export. The backend uses the **mock / sample CSV** (for example `sample-readings.csv`) so the service stays light, starts reliably, and matches the constraints of a serverless-oriented runtime. The full **~500MB+** single-file telemetry CSV is supported by the codebase for heavy local or dedicated-server testing (see below), but it is **not** what the simplified DigitalOcean deployment uses.
+
+> **NOTE:** By default in development, sample data is also used (`sample-readings.csv`) for a small local footprint.
 
 When deploying for production or conducting heavy scale testing with the original telemetry logs:
 1. Place your large 500MB+ dataset in the `server/data/` folder.

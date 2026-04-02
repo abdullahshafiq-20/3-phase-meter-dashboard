@@ -14,7 +14,7 @@ const LOG_EVERY_N_CHUNKS = 50; // log once per 50 seed chunks per device
 // Only push a live:reading socket event once every EMIT_INTERVAL_MS per device.
 // Seed chunks (bulk_publish historical data) NEVER emit socket events —
 // only the meter_simulator single-row messages do, and only when gated.
-const EMIT_INTERVAL_MS = 10_000; // 30 seconds
+const EMIT_INTERVAL_MS = 8000; // 8 seconds
 const lastEmittedAtByDevice = new Map();   // deviceId → Date.now() of last socket emit
 const lastEmittedBucketByDevice = new Map(); // deviceId → ISO bucket string of last emitted row
 

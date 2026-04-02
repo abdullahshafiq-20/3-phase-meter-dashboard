@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from threading import Thread
 import subprocess
+from collections import deque
 
 app = FastAPI()
 
@@ -10,17 +11,33 @@ service_status = {
     "running": False,
     "pid": None
 }
+recent_logs = deque(maxlen=100)
 
+def read_logs(pipe):
+    """Continuously read lines from the process stdout and append to deque."""
+    for line in iter(pipe.readline, b''):
+        decoded_line = line.decode('utf-8', errors='replace').strip()
+        if decoded_line:
+            recent_logs.append(decoded_line)
+
+import sys
 
 def start_simulator():
     global simulator_process, service_status
 
     if simulator_process is None:
+        # Use sys.executable to ensure we use the same Python environment (venv)
+        # Use python -u to unbuffer output, ensuring logs are readable live
         simulator_process = subprocess.Popen(
-            ["python", "meter_simulator.py"],  # adjust filename if needed
+            [sys.executable, "-u", "meter_simulator.py"],  
             stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE
+            stderr=subprocess.STDOUT
         )
+
+        # Start background thread to capture logs
+        log_thread = Thread(target=read_logs, args=(simulator_process.stdout,))
+        log_thread.daemon = True
+        log_thread.start()
 
         service_status["running"] = True
         service_status["pid"] = simulator_process.pid
@@ -59,9 +76,16 @@ def get_status():
     return {
         "service": "meter-simulator",
         "status": is_alive,
-        "pid": simulator_process.pid if is_alive else None
+        "pid": simulator_process.pid if is_alive else None,
+        "recent_logs": list(recent_logs)[-10:] # send the last 10 logs in the status
     }
 
+@app.get("/logs")
+def get_logs():
+    """Return all captured recent logs (up to 100 max)."""
+    return {
+        "logs": list(recent_logs)
+    }
 
 # ✅ Health endpoint (for DigitalOcean / load balancers)
 @app.get("/health")

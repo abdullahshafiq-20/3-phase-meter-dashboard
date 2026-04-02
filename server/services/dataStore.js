@@ -59,7 +59,7 @@ const lastSeenByDevice = new Map();
 const seenBuckets = new Map(); // deviceId → Set<string>
 
 // Fixed cap requested: keep only latest 5k readings per meter.
-const MAX_HISTORY_PER_DEVICE = 100;
+const MAX_HISTORY_PER_DEVICE = 5000;
 
 
 const trimDevice = (arr) => {

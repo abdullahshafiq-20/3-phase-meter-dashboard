@@ -1,8 +1,6 @@
 from fastapi import FastAPI
 from threading import Thread
 import subprocess
-import os
-import signal
 
 app = FastAPI()
 
@@ -42,7 +40,6 @@ def stop_simulator():
 
 @app.on_event("startup")
 def startup_event():
-    # Run simulator in background
     thread = Thread(target=start_simulator)
     thread.daemon = True
     thread.start()
@@ -55,8 +52,24 @@ def shutdown_event():
 
 @app.get("/")
 def get_status():
+    global simulator_process
+
+    is_alive = simulator_process is not None and simulator_process.poll() is None
+
     return {
         "service": "meter-simulator",
-        "status": service_status["running"],
-        "pid": service_status["pid"]
+        "status": is_alive,
+        "pid": simulator_process.pid if is_alive else None
+    }
+
+
+# ✅ Health endpoint (for DigitalOcean / load balancers)
+@app.get("/health")
+def health_check():
+    global simulator_process
+
+    is_alive = simulator_process is not None and simulator_process.poll() is None
+
+    return {
+        "status": "healthy" if is_alive else "unhealthy"
     }

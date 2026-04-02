@@ -1,8 +1,9 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useDevice } from '../context/DeviceContext';
+import { useLive } from '../context/LiveContext';
 import {
-  LayoutDashboard, BarChart3, Radio, Lightbulb, Bell, Shield, LogOut, Zap, ChevronDown, Menu, X
+  LayoutDashboard, BarChart3, Radio, Lightbulb, Bell, Shield, LogOut, Zap, ChevronDown, Menu, X, Wifi, WifiOff
 } from 'lucide-react';
 import { useState } from 'react';
 
@@ -21,6 +22,7 @@ const adminItems = [
 export default function AppLayout() {
   const { user, isAdmin, logout } = useAuth();
   const { devices, selectedDevice, selectDevice } = useDevice();
+  const { connected, allDeviceIds } = useLive();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
@@ -36,6 +38,8 @@ export default function AppLayout() {
         : 'text-grid-400 hover:text-slate-900 hover:bg-grid-800'
     }`;
 
+  const mergedDevices = [...new Set([...devices, ...allDeviceIds])].sort();
+
   const SidebarContent = () => (
     <>
       {/* Logo */}
@@ -46,8 +50,18 @@ export default function AppLayout() {
           </div>
           <div>
             <h1 className="text-base font-bold"><span className="text-cyan-electric">Power</span>Grid</h1>
-            <p className="text-[10px] uppercase tracking-widest text-grid-500">Monitor v1.0</p>
+            <p className="text-[10px] uppercase tracking-widest text-grid-500">Monitor v2.0</p>
           </div>
+        </div>
+      </div>
+
+      {/* Connection status */}
+      <div className="px-4 pt-3 pb-1">
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-semibold ${
+          connected ? 'bg-green-ok/10 text-green-ok' : 'bg-red-alarm/10 text-red-alarm'
+        }`}>
+          {connected ? <Wifi size={12} /> : <WifiOff size={12} />}
+          {connected ? `WebSocket connected · ${allDeviceIds.length} device${allDeviceIds.length !== 1 ? 's' : ''}` : 'Disconnected'}
         </div>
       </div>
 
@@ -61,7 +75,10 @@ export default function AppLayout() {
             onChange={(e) => selectDevice(e.target.value)}
             className="w-full bg-grid-900 border border-grid-700 text-slate-800 text-sm rounded-lg px-3 py-2.5 pr-8 appearance-none focus:outline-none focus:border-cyan-electric/50 cursor-pointer"
           >
-            {devices.map((d) => (
+            {mergedDevices.length === 0 && (
+              <option value="">Waiting for devices...</option>
+            )}
+            {mergedDevices.map((d) => (
               <option key={d} value={d}>{d}</option>
             ))}
           </select>

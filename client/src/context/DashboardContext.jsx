@@ -4,45 +4,80 @@ import { useDevice } from './DeviceContext';
 
 const DashboardContext = createContext(null);
 
+/** @typedef {{ data: object | null; error: string | null; loading: boolean; updatedAt: number | null }} DeviceDashboardEntry */
+
 export function DashboardProvider({ children }) {
   const { selectedDevice, loading: devicesLoading } = useDevice();
-  const [dashboard, setDashboard] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  /** @type {[Record<string, DeviceDashboardEntry>, Function]} */
+  const [byDevice, setByDevice] = useState({});
 
-  const refreshDashboard = useCallback(async () => {
-    if (!selectedDevice) {
-      setDashboard(null);
-      setError(null);
-      setLoading(false);
-      return;
-    }
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getDashboard(selectedDevice);
-      setDashboard(res.data);
-    } catch (err) {
-      setError(err.message);
-      setDashboard(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedDevice]);
+  const refreshDashboard = useCallback(
+    async (deviceId = selectedDevice, { silent } = {}) => {
+      if (!deviceId) {
+        return;
+      }
+      if (!silent) {
+        setByDevice((prev) => ({
+          ...prev,
+          [deviceId]: {
+            ...prev[deviceId],
+            loading: true,
+            error: null,
+          },
+        }));
+      }
+      try {
+        const res = await api.getDashboard(deviceId);
+        setByDevice((prev) => ({
+          ...prev,
+          [deviceId]: {
+            data: res.data,
+            error: null,
+            loading: false,
+            updatedAt: Date.now(),
+          },
+        }));
+      } catch (err) {
+        const msg = err?.message || 'Failed to load dashboard';
+        const empty = err.message?.includes('No data yet');
+        setByDevice((prev) => ({
+          ...prev,
+          [deviceId]: {
+            data: empty ? null : prev[deviceId]?.data ?? null,
+            error: empty ? null : msg,
+            loading: false,
+            updatedAt: prev[deviceId]?.updatedAt ?? null,
+          },
+        }));
+      }
+    },
+    [selectedDevice]
+  );
 
   useEffect(() => {
-    refreshDashboard();
-  }, [refreshDashboard]);
+    if (!selectedDevice) return undefined;
+    refreshDashboard(selectedDevice, { silent: false });
+    const interval = setInterval(() => refreshDashboard(selectedDevice, { silent: true }), 10000);
+    return () => clearInterval(interval);
+  }, [selectedDevice, refreshDashboard]);
+
+  const entry = selectedDevice ? byDevice[selectedDevice] : undefined;
+  const dashboard = entry?.data ?? null;
+  const loading = entry?.loading ?? false;
+  const error = entry?.error ?? null;
+  const lastUpdatedAt = entry?.updatedAt ?? null;
 
   const value = useMemo(
     () => ({
       dashboard,
+      dashboardByDevice: byDevice,
       loading,
       error,
+      lastUpdatedAt,
       refreshDashboard,
-      devicesLoading
+      devicesLoading,
     }),
-    [dashboard, loading, error, refreshDashboard, devicesLoading]
+    [dashboard, byDevice, loading, error, lastUpdatedAt, refreshDashboard, devicesLoading]
   );
 
   return <DashboardContext.Provider value={value}>{children}</DashboardContext.Provider>;

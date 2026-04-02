@@ -1,6 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useDevice } from '../context/DeviceContext';
 import { useHistorical } from '../context/HistoricalContext';
+import { api } from '../services/api';
+import { CHART_TIME_PRESETS, getWindowFromPreset, formatWindowRange } from '../utils/timeWindow';
+import { aggregateConsumptionByInterval, bucketMsForPreset } from '../utils/chartAggregation';
 import { Calendar, ChevronLeft, ChevronRight, Table, BarChart3 } from 'lucide-react';
 import { LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 
@@ -10,9 +13,8 @@ export default function HistoricalPage() {
   const { selectedDevice } = useDevice();
   const [tab, setTab] = useState('consumption');
   const {
-    interval,
-    setInterval,
-    consumption,
+    chartPreset,
+    setChartPreset,
     tableData,
     page,
     setPage,
@@ -20,10 +22,51 @@ export default function HistoricalPage() {
     rangeFilter,
     setRangeFilter,
     applyRange,
-    loadingConsumption,
     loadingTable,
     loadingRange
   } = useHistorical();
+
+  const [chartRows, setChartRows] = useState([]);
+  const [consumptionBars, setConsumptionBars] = useState([]);
+  const [loadingChart, setLoadingChart] = useState(false);
+
+  const chartWindow = useMemo(() => getWindowFromPreset(chartPreset), [chartPreset]);
+  const chartWindowLabel = formatWindowRange(chartWindow.from, chartWindow.to);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!selectedDevice || (tab !== 'consumption' && tab !== 'voltage')) {
+      setChartRows([]);
+      setConsumptionBars([]);
+      return;
+    }
+    (async () => {
+      setLoadingChart(true);
+      try {
+        const res = await api.getRange(
+          selectedDevice,
+          chartWindow.from ?? undefined,
+          chartWindow.to ?? undefined
+        );
+        const rows = res.data?.data ?? [];
+        if (cancelled) return;
+        setChartRows(rows);
+        const bucketMs = bucketMsForPreset(chartPreset, rows);
+        setConsumptionBars(aggregateConsumptionByInterval(rows, bucketMs));
+      } catch (e) {
+        console.error(e);
+        if (!cancelled) {
+          setChartRows([]);
+          setConsumptionBars([]);
+        }
+      } finally {
+        if (!cancelled) setLoadingChart(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedDevice, chartPreset, tab, chartWindow.from, chartWindow.to]);
 
   const tabs = [
     { key: 'consumption', label: 'Consumption', icon: BarChart3 },
@@ -35,10 +78,10 @@ export default function HistoricalPage() {
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-extrabold tracking-tight">Historical Data</h2>
-        <p className="text-grid-400 text-sm mt-1">{selectedDevice} — CSV-backed readings</p>
+        <p className="text-grid-400 text-sm mt-1">{selectedDevice} — accumulated readings from MQTT</p>
       </div>
 
-      {/* Date range filter */}
+      {/* Date range filter — raw table */}
       <div className="glass-panel p-4 flex flex-wrap items-end gap-4">
         <div>
           <label className="block text-[10px] uppercase tracking-widest text-grid-500 font-semibold mb-1">From</label>
@@ -52,9 +95,9 @@ export default function HistoricalPage() {
         </div>
         <button onClick={applyRange}
           className="px-4 py-2 bg-cyan-electric/10 border border-cyan-electric/20 text-cyan-electric rounded-lg text-sm font-semibold hover:bg-cyan-electric/20 transition-colors flex items-center gap-2 cursor-pointer">
-          <Calendar size={14} /> Filter
+          <Calendar size={14} /> Load table range
         </button>
-        {loadingRange ? <span className="text-grid-400 text-xs">Filtering...</span> : <span className="text-grid-400 text-xs">{rangeData.count} readings in range</span>}
+        {loadingRange ? <span className="text-grid-400 text-xs">Filtering...</span> : <span className="text-grid-400 text-xs">{rangeData.count} readings in table range</span>}
       </div>
 
       {/* Tabs */}
@@ -69,59 +112,79 @@ export default function HistoricalPage() {
         ))}
       </div>
 
+      {/* Presets for chart tabs */}
+      {(tab === 'consumption' || tab === 'voltage') && (
+        <div className="glass-panel p-4 flex flex-wrap items-center gap-2">
+          <span className="text-[10px] uppercase tracking-widest text-grid-500 font-semibold mr-2">Chart window</span>
+          {CHART_TIME_PRESETS.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => setChartPreset(p.id)}
+              className={`px-3 py-1.5 text-xs rounded-lg font-semibold transition-colors cursor-pointer ${
+                chartPreset === p.id ? 'bg-cyan-electric/10 text-cyan-electric border border-cyan-electric/30' : 'text-grid-500 border border-transparent hover:text-slate-900'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+          {!loadingChart && (
+            <span className="text-xs text-grid-500 ml-auto">
+              {chartRows.length} readings{chartWindowLabel ? ` · ${chartWindowLabel}` : ''}
+            </span>
+          )}
+        </div>
+      )}
+
       {/* TAB: Consumption Chart */}
       {tab === 'consumption' && (
         <div className="glass-panel p-6 animate-fade-in">
           <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-grid-400 uppercase tracking-wider">Energy Consumption (ΔkWh)</h3>
-            <div className="flex gap-1">
-              {['hourly', 'daily'].map((i) => (
-                <button key={i} onClick={() => setInterval(i)}
-                  className={`px-3 py-1 text-xs rounded-lg font-semibold transition-colors cursor-pointer ${
-                    interval === i ? 'bg-cyan-electric/10 text-cyan-electric' : 'text-grid-400 hover:text-slate-900'
-                  }`}>{i}</button>
-              ))}
-            </div>
+            <h3 className="text-sm font-semibold text-grid-400 uppercase tracking-wider">Energy consumption (ΔkWh per bucket)</h3>
           </div>
-          {loadingConsumption ? <p className="text-grid-400 text-sm">Loading consumption...</p> : null}
+          {loadingChart ? <p className="text-grid-400 text-sm">Loading chart…</p> : null}
           <div className="w-full min-w-[280px]" style={{ height: 350 }}>
             <ResponsiveContainer width="100%" height={350} minWidth={200} initialDimension={{ width: 400, height: 350 }}>
-            <BarChart data={consumption}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#dce5f2" />
-              <XAxis dataKey="bucket" tick={{ fontSize: 9, fill: '#64748b' }} angle={-45} textAnchor="end" height={60} />
-              <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#64748b' }} />
-              <Tooltip contentStyle={chartTooltip} formatter={(v) => [`${v.toFixed(4)} kWh`, 'Consumed']} />
-              <Bar dataKey="consumedKwh" fill="#00e5ff" radius={[3, 3, 0, 0]} />
-            </BarChart>
-          </ResponsiveContainer>
+              <BarChart data={consumptionBars}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#dce5f2" />
+                <XAxis dataKey="bucket" tick={{ fontSize: 9, fill: '#64748b' }} angle={-45} textAnchor="end" height={60} tickFormatter={(v) => new Date(v).toLocaleString()} />
+                <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#64748b' }} />
+                <Tooltip contentStyle={chartTooltip} labelFormatter={(v) => new Date(v).toLocaleString()} formatter={(v) => [`${Number(v).toFixed(4)} kWh`, 'Consumed']} />
+                <Bar dataKey="consumedKwh" fill="#00e5ff" radius={[3, 3, 0, 0]} />
+              </BarChart>
+            </ResponsiveContainer>
           </div>
+          {!loadingChart && consumptionBars.length === 0 && (
+            <p className="text-center text-grid-500 text-sm mt-4">No readings in this window yet.</p>
+          )}
         </div>
       )}
 
       {/* TAB: Voltage Trends */}
       {tab === 'voltage' && (
         <div className="glass-panel p-6 animate-fade-in">
-          <h3 className="text-sm font-semibold text-grid-400 uppercase tracking-wider mb-4">Per-Phase Voltage</h3>
+          <h3 className="text-sm font-semibold text-grid-400 uppercase tracking-wider mb-4">Per-phase voltage</h3>
+          {loadingChart ? <p className="text-grid-400 text-sm">Loading chart…</p> : null}
           <div className="w-full min-w-[280px]" style={{ height: 350 }}>
             <ResponsiveContainer width="100%" height={350} minWidth={200} initialDimension={{ width: 400, height: 350 }}>
-            <LineChart data={rangeData.data || []}>
-              {(rangeData.data || []).length > 0 ? (
-                <>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#dce5f2" />
-                  <XAxis dataKey="bucket" tick={{ fontSize: 9, fill: '#64748b' }} />
-                  <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#64748b' }} domain={['auto', 'auto']} />
-                  <Tooltip contentStyle={chartTooltip} labelFormatter={(l) => new Date(l).toLocaleString()} />
-                  <Legend />
-                  <Line type="monotone" dataKey="va" stroke="#00e5ff" dot={false} strokeWidth={1.5} name="V(A)" />
-                  <Line type="monotone" dataKey="vb" stroke="#7c4dff" dot={false} strokeWidth={1.5} name="V(B)" />
-                  <Line type="monotone" dataKey="vc" stroke="#ff9100" dot={false} strokeWidth={1.5} name="V(C)" />
-                </>
-              ) : null}
-            </LineChart>
-          </ResponsiveContainer>
+              <LineChart data={chartRows}>
+                {chartRows.length > 0 ? (
+                  <>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#dce5f2" />
+                    <XAxis dataKey="bucket" tick={{ fontSize: 9, fill: '#64748b' }} tickFormatter={(v) => new Date(v).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })} />
+                    <YAxis stroke="#94a3b8" tick={{ fontSize: 11, fill: '#64748b' }} domain={['auto', 'auto']} />
+                    <Tooltip contentStyle={chartTooltip} labelFormatter={(l) => new Date(l).toLocaleString()} />
+                    <Legend />
+                    <Line type="monotone" dataKey="va" stroke="#00e5ff" dot={false} strokeWidth={1.5} name="V(A)" />
+                    <Line type="monotone" dataKey="vb" stroke="#7c4dff" dot={false} strokeWidth={1.5} name="V(B)" />
+                    <Line type="monotone" dataKey="vc" stroke="#ff9100" dot={false} strokeWidth={1.5} name="V(C)" />
+                  </>
+                ) : null}
+              </LineChart>
+            </ResponsiveContainer>
           </div>
-          {(rangeData.data || []).length === 0 && (
-            <p className="text-center text-grid-500 text-sm mt-4">Use the date range filter above to load voltage data</p>
+          {!loadingChart && chartRows.length === 0 && (
+            <p className="text-center text-grid-500 text-sm mt-4">No readings in this window yet.</p>
           )}
         </div>
       )}
@@ -159,7 +222,6 @@ export default function HistoricalPage() {
               </tbody>
             </table>
           </div>
-          {/* Pagination */}
           <div className="flex items-center justify-between px-4 py-3 border-t border-grid-700/50">
             <span className="text-grid-400 text-xs">Page {tableData.page} of {tableData.totalPages} ({tableData.total} total)</span>
             <div className="flex gap-2">

@@ -1,19 +1,18 @@
-import { csvDataService } from '../services/csvDataService.js';
-import { liveDataService } from '../services/liveDataService.js';
+import { dataStore } from '../services/dataStore.js';
 import * as insightService from '../services/insightService.js';
 import { sendSuccess, sendError } from '../common/response.js';
 
 export const getDashboard = (req, res) => {
   try {
     const { deviceId } = req.params;
-    const readings = csvDataService.getDeviceReadings(deviceId);
-    const info = csvDataService.getDeviceInfo(deviceId);
-    const summary = csvDataService.getSummary(deviceId);
-    const consumption = csvDataService.getConsumption(deviceId, 'daily');
+    const readings = dataStore.getDeviceReadings(deviceId);
+    const info = dataStore.getDeviceInfo(deviceId);
+    const summary = dataStore.getSummary(deviceId);
+    const consumption = dataStore.getConsumption(deviceId, 'daily');
     const peakDemand = insightService.getPeakDemand(deviceId);
     const powerFactor = insightService.getPowerFactorInsight(deviceId);
     const loadCurve = insightService.getDailyLoadCurve(deviceId);
-    const live = liveDataService.getLatestLiveReading(deviceId);
+    const live = dataStore.getLatestReading(deviceId);
 
     const recentReadings = readings.slice(-24).map((r) => ({
       bucket: r.bucket,
@@ -27,7 +26,7 @@ export const getDashboard = (req, res) => {
       cc: r.cc
     }));
 
-    const totalConsumed = Math.max(0, readings.at(-1).e - readings[0].e);
+    const totalConsumed = readings.length > 1 ? Math.max(0, readings.at(-1).e - readings[0].e) : 0;
     const lastDayConsumption = consumption.at(-1)?.consumedKwh || 0;
     const peakReadingDate = new Date(peakDemand.timestamp);
     const peakReadingHourUTC = Number.isNaN(peakReadingDate.getTime())
@@ -62,6 +61,16 @@ export const getDashboard = (req, res) => {
       dailyConsumption: consumption,
       loadCurve: loadCurve.curve
     }, 'Dashboard data');
+  } catch (err) {
+    return sendError(res, err.message, err.statusCode || 500);
+  }
+};
+
+export const getAllDevicesDashboard = (_req, res) => {
+  try {
+    const statuses = dataStore.getAllDeviceStatuses();
+    const latest = dataStore.getAllLatestReadings();
+    return sendSuccess(res, { statuses, latest }, 'All devices dashboard');
   } catch (err) {
     return sendError(res, err.message, err.statusCode || 500);
   }

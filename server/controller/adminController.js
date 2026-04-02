@@ -1,5 +1,5 @@
 import { getSanitizedUsers } from '../services/userService.js';
-import { csvDataService } from '../services/csvDataService.js';
+import { dataStore } from '../services/dataStore.js';
 import { sendSuccess, sendError } from '../common/response.js';
 
 export const listUsers = async (_req, res) => {
@@ -12,20 +12,17 @@ export const listUsers = async (_req, res) => {
 };
 
 export const getSystemStatus = (_req, res) => {
-  const devices = csvDataService.getDevices();
+  const devices = dataStore.getDevices();
+  const statuses = dataStore.getAllDeviceStatuses();
   return sendSuccess(res, {
     uptime: process.uptime(),
     memoryUsage: process.memoryUsage(),
     deviceCount: devices.length,
-    devices
+    devices,
+    statuses
   }, 'System status');
 };
 
 export const reloadCsv = async (_req, res) => {
-  try {
-    await csvDataService.initialize();
-    return sendSuccess(res, null, 'CSV data reloaded successfully');
-  } catch (err) {
-    return sendError(res, `Failed to reload CSV: ${err.message}`, 500);
-  }
+  return sendSuccess(res, null, 'Data is now fully MQTT-driven. No CSV to reload.');
 };

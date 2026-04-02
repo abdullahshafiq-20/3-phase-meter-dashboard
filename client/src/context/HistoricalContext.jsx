@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../services/api';
 import { useDevice } from './DeviceContext';
 
@@ -6,26 +6,60 @@ const HistoricalContext = createContext(null);
 
 export function HistoricalProvider({ children }) {
   const { selectedDevice } = useDevice();
-  const [interval, setInterval] = useState('daily');
-  const [consumption, setConsumption] = useState([]);
+  const prevDeviceRef = useRef(null);
+  const cacheRef = useRef({});
+
+  const [chartPreset, setChartPreset] = useState('24h');
   const [tableData, setTableData] = useState(null);
   const [page, setPage] = useState(1);
   const [rangeData, setRangeData] = useState({ count: 0, data: [] });
   const [rangeFilter, setRangeFilter] = useState({ from: '', to: '' });
-  const [loadingConsumption, setLoadingConsumption] = useState(false);
   const [loadingTable, setLoadingTable] = useState(false);
   const [loadingRange, setLoadingRange] = useState(false);
 
-  const loadConsumption = useCallback(async () => {
-    if (!selectedDevice) return;
-    setLoadingConsumption(true);
-    try {
-      const res = await api.getConsumption(selectedDevice, interval);
-      setConsumption(res.data.entries || []);
-    } finally {
-      setLoadingConsumption(false);
+  useEffect(() => {
+    const prev = prevDeviceRef.current;
+    if (prev && prev !== selectedDevice) {
+      cacheRef.current[prev] = {
+        chartPreset,
+        tableData,
+        page,
+        rangeData,
+        rangeFilter,
+      };
     }
-  }, [selectedDevice, interval]);
+
+    if (selectedDevice) {
+      const c = cacheRef.current[selectedDevice];
+      if (c) {
+        setChartPreset(c.chartPreset);
+        setTableData(c.tableData);
+        setPage(c.page);
+        setRangeData(c.rangeData);
+        setRangeFilter(c.rangeFilter);
+      } else {
+        setChartPreset('24h');
+        setTableData(null);
+        setPage(1);
+        setRangeData({ count: 0, data: [] });
+        setRangeFilter({ from: '', to: '' });
+      }
+    }
+
+    prevDeviceRef.current = selectedDevice;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedDevice]);
+
+  useEffect(() => {
+    if (!selectedDevice) return;
+    cacheRef.current[selectedDevice] = {
+      chartPreset,
+      tableData,
+      page,
+      rangeData,
+      rangeFilter,
+    };
+  }, [selectedDevice, chartPreset, tableData, page, rangeData, rangeFilter]);
 
   const loadTable = useCallback(async () => {
     if (!selectedDevice) return;
@@ -54,23 +88,14 @@ export function HistoricalProvider({ children }) {
   }, [selectedDevice, rangeFilter]);
 
   useEffect(() => {
-    loadConsumption();
-  }, [loadConsumption]);
-
-  useEffect(() => {
+    if (!selectedDevice) return;
     loadTable();
   }, [loadTable]);
 
-  useEffect(() => {
-    setPage(1);
-    setRangeData({ count: 0, data: [] });
-  }, [selectedDevice]);
-
   const value = useMemo(
     () => ({
-      interval,
-      setInterval,
-      consumption,
+      chartPreset,
+      setChartPreset,
       tableData,
       page,
       setPage,
@@ -78,22 +103,10 @@ export function HistoricalProvider({ children }) {
       rangeFilter,
       setRangeFilter,
       applyRange,
-      loadingConsumption,
       loadingTable,
-      loadingRange
+      loadingRange,
     }),
-    [
-      interval,
-      consumption,
-      tableData,
-      page,
-      rangeData,
-      rangeFilter,
-      applyRange,
-      loadingConsumption,
-      loadingTable,
-      loadingRange
-    ]
+    [chartPreset, tableData, page, rangeData, rangeFilter, applyRange, loadingTable, loadingRange]
   );
 
   return <HistoricalContext.Provider value={value}>{children}</HistoricalContext.Provider>;

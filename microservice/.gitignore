@@ -1,0 +1,4 @@
+venv/
+.env
+telemetry_export.csv
+__pycache__

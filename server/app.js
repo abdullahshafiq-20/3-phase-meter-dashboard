@@ -1,8 +1,11 @@
 import http from 'node:http';
+import path from 'node:path'
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
-import { WebSocketServer } from 'ws';
 import { config } from './config/index.js';
+import { hivemqClient } from './config/hivemq.js';
+import { socketConfig } from './config/socket.js';
 import { requestLogger } from './middlewares/requestLogger.js';
 import { notFound, errorHandler } from './middlewares/errorHandler.js';
 import { authenticateAccessToken } from './middlewares/auth.js';
@@ -14,10 +17,11 @@ import alertRoutes from './routes/alertRoutes.js';
 import adminRoutes from './routes/adminRoutes.js';
 import dashboardRoutes from './routes/dashboardRoutes.js';
 import { liveDataService } from './services/liveDataService.js';
-import { csvDataService } from './services/csvDataService.js';
 import { logger } from './common/logger.js';
 
-await csvDataService.initialize();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+await hivemqClient.connect();
 
 const app = express();
 app.use(
@@ -48,21 +52,12 @@ app.use(notFound);
 app.use(errorHandler);
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ noServer: true });
 
-server.on('upgrade', (request, socket, head) => {
-  const match = request.url?.match(/^\/data\/([^/]+)\/live\/stream$/);
-  if (!match) {
-    socket.destroy();
-    return;
-  }
+socketConfig.init(server);
 
-  wss.handleUpgrade(request, socket, head, (ws) => {
-    const deviceId = decodeURIComponent(match[1]);
-    liveDataService.attachClient(ws, deviceId);
-  });
-});
+liveDataService.subscribeHistorical();
 
 server.listen(config.port, () => {
   logger.info(`Server listening on http://localhost:${config.port}`);
+  logger.info('Waiting for MQTT data from meter simulators...');
 });

@@ -1,6 +1,18 @@
 import { config } from '../config/index.js';
-import { getDeviceReadings } from './csvDataService.js';
+import { getDeviceReadings, getRange } from './dataStore.js';
 
+/**
+ * Readings for insights: full device history, or filtered by optional ISO `from` / `to`.
+ * @param {string} deviceId
+ * @param {{ from?: string; to?: string }} [opts]
+ */
+const getSlicedReadings = (deviceId, opts = {}) => {
+  const { from, to } = opts;
+  if (from || to) {
+    return getRange(deviceId, from ?? undefined, to ?? undefined);
+  }
+  return getDeviceReadings(deviceId);
+};
 
 const safeStats = (arr) => {
   let min = Infinity;
@@ -28,8 +40,8 @@ const stdDev = (arr) => {
 };
 
 
-export const getPeakDemand = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getPeakDemand = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   if (!readings.length) {
     return { deviceId, peakApW: 0, timestamp: null };
   }
@@ -51,8 +63,18 @@ export const getPeakDemand = (deviceId) => {
   };
 };
 
-export const getEnergyCost = (deviceId, unitPrice = 0) => {
-  const readings = getDeviceReadings(deviceId);
+export const getEnergyCost = (deviceId, unitPrice = 0, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
+  if (!readings.length) {
+    return {
+      deviceId,
+      unitPrice,
+      consumedKwh: 0,
+      totalCost: 0,
+      periodStart: null,
+      periodEnd: null
+    };
+  }
   const consumedKwh = Math.max(0, readings.at(-1).e - readings[0].e);
   return {
     deviceId,
@@ -64,8 +86,8 @@ export const getEnergyCost = (deviceId, unitPrice = 0) => {
   };
 };
 
-export const getPowerFactorInsight = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getPowerFactorInsight = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const pfValues = readings.map((r) => r.pf);
   const stats = safeStats(pfValues);
   const lowPfReadings = readings.filter((r) => r.pf < 0.85);
@@ -79,8 +101,8 @@ export const getPowerFactorInsight = (deviceId) => {
   };
 };
 
-export const getPhaseImbalanceInsight = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getPhaseImbalanceInsight = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const timeline = readings.map((r) => {
     const values = [r.ca, r.cb, r.cc];
     const avg = (values[0] + values[1] + values[2]) / 3;
@@ -108,8 +130,8 @@ export const getPhaseImbalanceInsight = (deviceId) => {
   };
 };
 
-export const getVoltageStabilityInsight = (deviceId, nominalVoltage = config.nominalVoltage) => {
-  const readings = getDeviceReadings(deviceId);
+export const getVoltageStabilityInsight = (deviceId, nominalVoltage = config.nominalVoltage, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const asPhase = (key) => {
     const values = readings.map((r) => r[key]);
     const stats = safeStats(values);
@@ -134,8 +156,8 @@ export const getVoltageStabilityInsight = (deviceId, nominalVoltage = config.nom
   };
 };
 
-export const getReactivePowerInsight = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getReactivePowerInsight = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const rpValues = readings.map((r) => r.rp);
   const stats = safeStats(rpValues);
   const threshold = stats.avg * 1.35;
@@ -151,8 +173,8 @@ export const getReactivePowerInsight = (deviceId) => {
   };
 };
 
-export const getFrequencyStabilityInsight = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getFrequencyStabilityInsight = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const freqValues = readings.map((r) => r.f);
   const stats = safeStats(freqValues);
   const timeline = readings.map((r) => ({
@@ -173,8 +195,8 @@ export const getFrequencyStabilityInsight = (deviceId) => {
   };
 };
 
-export const getAnomalies = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getAnomalies = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const events = [];
 
   for (let i = 1; i < readings.length; i += 1) {
@@ -238,8 +260,8 @@ export const getAnomalies = (deviceId) => {
   };
 };
 
-export const getLoadProfile = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getLoadProfile = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const apValues = readings.map((r) => r.ap);
   const stats = safeStats(apValues);
 
@@ -265,8 +287,8 @@ export const getLoadProfile = (deviceId) => {
 
 // Bonus insights
 
-export const getHarmonicDistortion = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getHarmonicDistortion = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const timeline = readings.map((r) => {
     const cosPf = Math.max(0.01, Math.min(1, Math.abs(r.pf)));
     const thdEstimate = Number((Math.sqrt(1 / (cosPf * cosPf) - 1) * 100).toFixed(4));
@@ -289,8 +311,8 @@ export const getHarmonicDistortion = (deviceId) => {
   };
 };
 
-export const getDailyLoadCurve = (deviceId) => {
-  const readings = getDeviceReadings(deviceId);
+export const getDailyLoadCurve = (deviceId, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const hourBuckets = Array.from({ length: 24 }, () => ({
     sumAp: 0,
     sumPf: 0,
@@ -355,8 +377,8 @@ export const getDailyLoadCurve = (deviceId) => {
   };
 };
 
-export const getCapacityUtilization = (deviceId, ratedCapacityW = 10000) => {
-  const readings = getDeviceReadings(deviceId);
+export const getCapacityUtilization = (deviceId, ratedCapacityW = 10000, opts = {}) => {
+  const readings = getSlicedReadings(deviceId, opts);
   const apValues = readings.map((r) => r.ap);
   const stats = safeStats(apValues);
 

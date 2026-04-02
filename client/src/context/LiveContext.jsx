@@ -1,8 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../services/api';
+import { getSocket } from '../services/api';
 import { useDevice } from './DeviceContext';
 
-const MAX_HISTORY = 72;
+const MAX_HISTORY = 120;
 const LiveContext = createContext(null);
 
 const V_NOM = Number(import.meta.env.VITE_NOMINAL_VOLTAGE) || 230;
@@ -37,55 +37,128 @@ function enrichLiveSample(data) {
     voltageLimitStressPct,
     currentVsRatedPct,
     displayNominalV: V_NOM,
-    displayRatedA: I_RATED
+    displayRatedA: I_RATED,
+    receivedAt: Date.now(),
   };
 }
 
 export function LiveProvider({ children }) {
   const { selectedDevice } = useDevice();
-  const wsRef = useRef(null);
   const [connected, setConnected] = useState(false);
-  const [current, setCurrent] = useState(null);
-  const [history, setHistory] = useState([]);
 
-  const connect = useCallback(() => {
-    if (!selectedDevice) return;
-    if (wsRef.current) wsRef.current.close();
+  // Per-device state: { [deviceId]: { current, history, lastSeenMs } }
+  const [deviceData, setDeviceData] = useState({});
 
-    const ws = api.createLiveStream(selectedDevice);
-    wsRef.current = ws;
-    setConnected(false);
+  const socketRef = useRef(null);
+  const mountedRef = useRef(true);
 
-    ws.onopen = () => setConnected(true);
-    ws.onclose = () => setConnected(false);
-    ws.onerror = () => setConnected(false);
+  const connectSocket = useCallback(() => {
+    const socket = getSocket();
+    socketRef.current = socket;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
+    if (!socket.connected) {
+      socket.connect();
+    }
+
+    socket.emit('subscribe:all');
+
+    const onConnect = () => {
+      if (mountedRef.current) setConnected(true);
+      socket.emit('subscribe:all');
+    };
+    const onDisconnect = () => {
+      if (mountedRef.current) setConnected(false);
+    };
+
+    const onLiveReading = (data) => {
+      if (!mountedRef.current) return;
+      const deviceId = data.deviceid || data.deviceId;
+      if (!deviceId) return;
       const enriched = enrichLiveSample(data);
-      setCurrent(enriched);
-      setHistory((prev) => {
-        const next = [...prev, enriched];
-        return next.length > MAX_HISTORY ? next.slice(-MAX_HISTORY) : next;
+
+      setDeviceData((prev) => {
+        const existing = prev[deviceId] || { current: null, history: [] };
+        const nextHistory = [...existing.history, enriched];
+        return {
+          ...prev,
+          [deviceId]: {
+            current: enriched,
+            history: nextHistory.length > MAX_HISTORY ? nextHistory.slice(-MAX_HISTORY) : nextHistory,
+            lastSeenMs: Date.now(),
+          }
+        };
       });
     };
-  }, [selectedDevice]);
+
+    const onDeviceStatus = (statusData) => {
+      if (!mountedRef.current) return;
+      const { deviceId, ...status } = statusData;
+      setDeviceData((prev) => {
+        const existing = prev[deviceId];
+        if (!existing) return prev;
+        return {
+          ...prev,
+          [deviceId]: { ...existing, ...status }
+        };
+      });
+    };
+
+    socket.on('connect', onConnect);
+    socket.on('disconnect', onDisconnect);
+    socket.on('live:reading', onLiveReading);
+    socket.on('device:status', onDeviceStatus);
+
+    if (socket.connected) setConnected(true);
+
+    return () => {
+      socket.off('connect', onConnect);
+      socket.off('disconnect', onDisconnect);
+      socket.off('live:reading', onLiveReading);
+      socket.off('device:status', onDeviceStatus);
+      socket.emit('unsubscribe:all');
+    };
+  }, []);
 
   useEffect(() => {
-    setCurrent(null);
-    setHistory([]);
-    connect();
+    mountedRef.current = true;
+    const cleanup = connectSocket();
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close();
-        wsRef.current = null;
-      }
+      mountedRef.current = false;
+      if (cleanup) cleanup();
     };
-  }, [connect]);
+  }, [connectSocket]);
+
+  const reconnect = useCallback(() => {
+    const socket = getSocket();
+    socket.disconnect();
+    setDeviceData({});
+    setTimeout(() => connectSocket(), 100);
+  }, [connectSocket]);
+
+  const currentDevice = useMemo(() => {
+    if (!selectedDevice) return { current: null, history: [] };
+    return deviceData[selectedDevice] || { current: null, history: [] };
+  }, [selectedDevice, deviceData]);
+
+  const allDeviceIds = useMemo(() => Object.keys(deviceData).sort(), [deviceData]);
+
+  const secondsSinceLastData = useCallback((deviceId) => {
+    const d = deviceData[deviceId];
+    if (!d?.lastSeenMs) return null;
+    return Math.round((Date.now() - d.lastSeenMs) / 1000);
+  }, [deviceData]);
 
   const value = useMemo(
-    () => ({ connected, current, history, reconnect: connect }),
-    [connected, current, history, connect]
+    () => ({
+      connected,
+      current: currentDevice.current,
+      history: currentDevice.history,
+      deviceData,
+      allDeviceIds,
+      secondsSinceLastData,
+      reconnect,
+    }),
+    [connected, currentDevice, deviceData, allDeviceIds, secondsSinceLastData, reconnect]
   );
 
   return <LiveContext.Provider value={value}>{children}</LiveContext.Provider>;

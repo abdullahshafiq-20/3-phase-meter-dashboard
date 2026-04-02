@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from '../services/api';
 import { useDevice } from './DeviceContext';
+import { getWindowFromPreset, formatWindowRange } from '../utils/timeWindow';
 
 const InsightsContext = createContext(null);
 
@@ -16,21 +17,43 @@ const emptyData = {
   loadProfile: null,
   harmonicDistortion: null,
   dailyLoadCurve: null,
-  capacityUtilization: null
+  capacityUtilization: null,
 };
 
 export function InsightsProvider({ children }) {
   const { selectedDevice } = useDevice();
   const [unitPrice, setUnitPrice] = useState(0.12);
   const [ratedCapacity, setRatedCapacity] = useState(10000);
-  const [insights, setInsights] = useState(emptyData);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [timePreset, setTimePreset] = useState('24h');
+  const [byKey, setByKey] = useState({});
+
+  const window = useMemo(() => getWindowFromPreset(timePreset), [timePreset]);
+  const windowLabel = useMemo(() => formatWindowRange(window.from, window.to), [window.from, window.to]);
+
+  const cacheKey = selectedDevice ? `${selectedDevice}|${timePreset}` : '';
+  const entry = cacheKey ? byKey[cacheKey] : null;
+  const insights = entry?.insights ?? emptyData;
+  const loading = entry?.loading ?? false;
+  const error = entry?.error ?? null;
 
   const loadInsights = useCallback(async () => {
-    if (!selectedDevice) return;
-    setLoading(true);
-    setError(null);
+    const deviceId = selectedDevice;
+    if (!deviceId) return;
+
+    const win = getWindowFromPreset(timePreset);
+    const r = win.from && win.to ? { from: win.from, to: win.to } : {};
+    const key = `${deviceId}|${timePreset}`;
+
+    setByKey((prev) => ({
+      ...prev,
+      [key]: {
+        ...prev[key],
+        loading: true,
+        error: null,
+        insights: prev[key]?.insights ?? emptyData,
+      },
+    }));
+
     try {
       const [
         peakDemand,
@@ -43,60 +66,61 @@ export function InsightsProvider({ children }) {
         loadProfile,
         harmonicDistortion,
         dailyLoadCurve,
-        capacityUtilization
+        capacityUtilization,
+        energyCost,
       ] = await Promise.all([
-        api.getPeakDemand(selectedDevice),
-        api.getPowerFactor(selectedDevice),
-        api.getPhaseImbalance(selectedDevice),
-        api.getVoltageStability(selectedDevice),
-        api.getReactivePower(selectedDevice),
-        api.getFrequencyStability(selectedDevice),
-        api.getAnomalies(selectedDevice),
-        api.getLoadProfile(selectedDevice),
-        api.getHarmonicDistortion(selectedDevice),
-        api.getDailyLoadCurve(selectedDevice),
-        api.getCapacityUtilization(selectedDevice, ratedCapacity)
+        api.getPeakDemand(deviceId, r),
+        api.getPowerFactor(deviceId, r),
+        api.getPhaseImbalance(deviceId, r),
+        api.getVoltageStability(deviceId, undefined, r),
+        api.getReactivePower(deviceId, r),
+        api.getFrequencyStability(deviceId, r),
+        api.getAnomalies(deviceId, r),
+        api.getLoadProfile(deviceId, r),
+        api.getHarmonicDistortion(deviceId, r),
+        api.getDailyLoadCurve(deviceId, r),
+        api.getCapacityUtilization(deviceId, ratedCapacity, r),
+        api.getEnergyCost(deviceId, unitPrice, r),
       ]);
 
-      setInsights((prev) => ({
-        peakDemand: peakDemand.data,
-        energyCost: prev.energyCost,
-        powerFactor: powerFactor.data,
-        phaseImbalance: phaseImbalance.data,
-        voltageStability: voltageStability.data,
-        reactivePower: reactivePower.data,
-        frequencyStability: frequencyStability.data,
-        anomalies: anomalies.data,
-        loadProfile: loadProfile.data,
-        harmonicDistortion: harmonicDistortion.data,
-        dailyLoadCurve: dailyLoadCurve.data,
-        capacityUtilization: capacityUtilization.data
+      setByKey((prev) => ({
+        ...prev,
+        [key]: {
+          loading: false,
+          error: null,
+          updatedAt: Date.now(),
+          insights: {
+            peakDemand: peakDemand.data,
+            energyCost: energyCost.data,
+            powerFactor: powerFactor.data,
+            phaseImbalance: phaseImbalance.data,
+            voltageStability: voltageStability.data,
+            reactivePower: reactivePower.data,
+            frequencyStability: frequencyStability.data,
+            anomalies: anomalies.data,
+            loadProfile: loadProfile.data,
+            harmonicDistortion: harmonicDistortion.data,
+            dailyLoadCurve: dailyLoadCurve.data,
+            capacityUtilization: capacityUtilization.data,
+          },
+        },
       }));
     } catch (err) {
       console.error('Failed to load insights:', err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
+      setByKey((prev) => ({
+        ...prev,
+        [key]: {
+          ...prev[key],
+          loading: false,
+          error: err.message,
+        },
+      }));
     }
-  }, [selectedDevice, ratedCapacity]);
-
-  const loadEnergyCost = useCallback(async () => {
-    if (!selectedDevice) return;
-    try {
-      const res = await api.getEnergyCost(selectedDevice, unitPrice);
-      setInsights((prev) => ({ ...prev, energyCost: res.data }));
-    } catch (err) {
-      console.error('Failed to load energy cost:', err);
-    }
-  }, [selectedDevice, unitPrice]);
+  }, [selectedDevice, ratedCapacity, timePreset, unitPrice]);
 
   useEffect(() => {
     loadInsights();
   }, [loadInsights]);
-
-  useEffect(() => {
-    loadEnergyCost();
-  }, [loadEnergyCost]);
 
   const value = useMemo(
     () => ({
@@ -104,12 +128,17 @@ export function InsightsProvider({ children }) {
       setUnitPrice,
       ratedCapacity,
       setRatedCapacity,
+      timePreset,
+      setTimePreset,
+      window,
+      windowLabel,
       insights,
+      insightsByKey: byKey,
       loading,
       error,
-      refreshInsights: loadInsights
+      refreshInsights: () => loadInsights(),
     }),
-    [unitPrice, ratedCapacity, insights, loading, error, loadInsights]
+    [unitPrice, ratedCapacity, timePreset, window, windowLabel, insights, byKey, loading, error, loadInsights]
   );
 
   return <InsightsContext.Provider value={value}>{children}</InsightsContext.Provider>;

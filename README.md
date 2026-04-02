@@ -1,248 +1,382 @@
-# 3-Phase Meter Dashboard API
+# 3-Phase Meter Dashboard
 
-A powerful backend for monitoring, evaluating, and deriving insights from 3-phase power meter telemetry. 
+A real-time multi-device 3-phase power meter monitoring system. Python meter simulators publish telemetry to HiveMQ Cloud (MQTT), a Node.js backend subscribes and processes all readings in memory, and a React frontend streams live data via WebSocket to display fleet-wide dashboards, analytics, alerts, and insights — all computed from real-time accumulated data.
 
-## Flow of the Application & Core Data Processing
+## Architecture Overview
 
-1. **Initialization**: On startup, the application reads telemetry data from a CSV file defined in `.env` (`CSV_PATH`). Using `csv-parse`, it streams and caches all readings grouped by `deviceId` in memory via `csvDataService`.
-2. **Data Cleanup & Calculation**: 
-   - Some legacy or partial telemetry exports may report Active Power (`ap`) as string zero (`0E-20`) or raw `0` even when Voltage, Current, and Power Factor are valid. The backend mathematically reconstructs this during loading using individual phase potentials: `Active Power = (Va*Ia + Vb*Ib + Vc*Ic) * |PF|`. 
-   - All standard metric limits (e.g., Power Factor) are clamped appropriately for data consistency during the initial parse pass.
-3. **Data Availability**: The core datasets are exposed through paginated sets, specific time-range queries, and aggregate summaries (Min/Max/Avg) directly sourced from memory to grant exceptionally fast reads.
-4. **Insight Generation**: The `insightService` iterates over the cached arrays to dynamically compute advanced electrical insights like:
-   - Peak Demand limits via array reduction.
-   - Phase imbalance percentages and standard deviations between Va/Vb/Vc.
-   - Harmonic distortion estimations.
-   - Dynamic load curves and capacity utilizations mapped chronologically.
-5. **Live Data Streaming**: Alongside historical data, a mock generator simulates real-time variations of the latest CSV records, emitting updates via a dedicated WebSocket Server (`ws://host/data/:deviceId/live/stream`) and REST `/live` endpoints to feed live-updating client dashboard charts.
-
----
-
-## Alert engine, health score, and future-risk score
-
-The **`alertService`** evaluates every telemetry row the same way CSV ingestion does: each sample is first passed through **`normalizeTelemetryExportRow`** in `csvDataService` (numeric coercion, `|PF|` clamp, and reconstructed **`ap`** when the export shows `ap = 0` but V/I/PF are valid: `ap = (Va·Ia + Vb·Ib + Vc·Ic) × |PF|`). The live mock path applies the same normalization so alerts, health, and risk stay consistent across **historical CSV** and **live** snapshots.
-
-### Health score (0–100): “how good is this reading?”
-
-Health is a **penalty model** starting at **100**. Branches use **`clamp(x, min, max)`** so penalties do not explode. Nominal line voltage **`Vnom`** comes from `NOMINAL_VOLTAGE` in config (default **230** V from `NOMINAL_VOLTAGE` in `.env`). **`ratedCapacityW`** (default **10_000** W) is used only for an extra penalty when `ap` is very high.
-
-**Per-reading components:**
-
-| Symbol        | Meaning                                                                 |
-|---------------|-------------------------------------------------------------------------|
-| `F_dev`       | \|f − 50\| (Hz)                                                         |
-| `V_avg`       | (Va + Vb + Vc) / 3                                                      |
-| `V_dev`       | \|V_avg − Vnom\|                                                        |
-| `I_avg`       | mean of `ca`, `cb`, `cc`                                                |
-| `I_max`       | max of phase currents                                                   |
-| `I_imbalance` | (I_max − I_avg) / I_avg (0 if I_avg negligible)                         |
-| `PF_loss`     | max(0, 1 − min(1, \|pf\|))                                              |
-| `RP_ratio`    | \|rp\| / \|ap\| capped to [0, 2] (safe divisor if ap ≈ 0)               |
-| `Power_spike` | \|ap − ap_prev\| / \|ap_prev\| if previous ap exists, else 0; clamped   |
-
-
-**Weights** (code constants): `Wf=10`, `Wv=15`, `Wi=20`, `Wpf=25`, `Wrp=15`, `Wspike=15`.
-
-**Formula:**
-
-```text
-health = 100
-  − Wf  · clamp(F_dev, 0, 1)
-  − Wv  · clamp(V_dev / 10, 0, 5)
-  − Wi  · clamp(I_imbalance, 0, 1.5)
-  − Wpf · clamp(PF_loss, 0, 1)
-  − Wrp · clamp(RP_ratio, 0, 1)
-  − Wspike · clamp(Power_spike, 0, 1)
-
-if ap > 0.95 × ratedCapacityW  →  health −= 8
-
-health = clamp(health, 0, 100)
+```
+┌─────────────────────┐     MQTT (TLS)     ┌──────────────────────┐     Socket.IO     ┌─────────────────────┐
+│   Meter Simulators   │ ────────────────▶  │    HiveMQ Cloud      │ ◀──subscribe──── │   Node.js Server    │
+│  (Python scripts)    │   meter/live/+     │    (MQTT Broker)     │                   │  (Express + WS)     │
+│                      │                    └──────────────────────┘                   │                     │
+│  METER-001           │                                                               │  ┌───────────────┐  │
+│  METER-002           │                         ▼ message                             │  │  Data Store    │  │
+│  METER-003           │                    ┌──────────────────────┐                   │  │  (in-memory)   │  │
+│  ...N devices        │                    │  Server subscribes   │                   │  │  per-device    │  │
+└─────────────────────┘                    │  to meter/live/+     │──ingest──────────▶│  │  history       │  │
+                                           │  (all devices at     │                   │  └───────────────┘  │
+                                           │   once, one sub)     │                   │         │            │
+                                           └──────────────────────┘                   │         ▼            │
+                                                                                      │  ┌───────────────┐  │
+                                                                                      │  │  Socket.IO     │  │
+                                                                                      │  │  emit to       │──────▶  React Frontend
+                                                                                      │  │  all-devices   │  │       (Vite + Tailwind)
+                                                                                      │  │  room instant  │  │
+                                                                                      │  └───────────────┘  │
+                                                                                      │         │            │
+                                                                                      │         ▼            │
+                                                                                      │  REST API (JWT)      │
+                                                                                      │  /dashboard, /data,  │
+                                                                                      │  /insights, /alerts  │
+                                                                                      └─────────────────────┘
 ```
 
-**Bands:** ≥90 Healthy · ≥75 Slight issues · ≥50 Degrading · &lt;50 Critical.
+## End-to-End Data Flow
 
-### Future-risk score (0–1): “how worried should we be about the near term?”
+### 1. Meter Simulator (Python) → HiveMQ
 
-Risk is **not** a physics model; it summarizes a **rolling window** of the last **`RISK_WINDOW = 8`** processed points (each point already has **health** and **alerts**). If the window has fewer than **3** samples, risk is **0**.
+The `microservice/meter_simulator.py` script simulates N virtual 3-phase meters. Each tick:
 
-**Ingredients:**
+- **Generates realistic telemetry**: voltage (3 phases), current (3 phases), power factor, frequency, active power, reactive power, cumulative energy
+- **Injects fault scenarios** probabilistically (15% default) to trigger alerts: under/over voltage, frequency deviation, phase failure, overload, low PF, etc.
+- **Publishes JSON** to `meter/live/{deviceId}` on HiveMQ Cloud over MQTTS (TLS, MQTTv5)
 
-1. **Health drop** `drop`: compare the two latest health values in the window:  
-   `dHealth = health[h−2] − health[h−1]`, then  
-   `drop = clamp(dHealth / 20, 0, 1)` — faster worsening → higher `drop`.
-
-2. **Variability** `variability`: over the window, compute sample standard deviation of **`ap`**, **`pf`**, and average voltage `(Va+Vb+Vc)/3`; normalize rough instability:  
-   `varAp = std(ap) / mean(ap)` (if `mean(ap)` small, treat as 0),  
-   `varPf = std(pf)`,  
-   `varV = std(Vavg) / mean(Vavg)`,  
-   then  
-   `variability = clamp(varAp + varPf + 2·varV, 0, 3) / 3`.
-
-3. **Violations** `viol`: sum a **severity weight** for every alert in the window: critical **1**, warning **0.5**, info **0.15**; then  
-   `viol = clamp(viol / 8, 0, 1)`.
-
-4. **Trend** `trend`: least-squares **slope** of health vs index in the window; **negative** slope (health falling over time) increases risk:  
-   `trend = clamp(−slope / 3, 0, 1)`.
-
-**Blend:**
-
-```text
-risk = clamp( 0.4·drop + 0.2·variability + 0.2·viol + 0.2·trend , 0, 1 )
+**Payload shape:**
+```json
+{
+  "bucket": "2026-04-02T12:00:00.000Z",
+  "deviceid": "METER-001",
+  "datatype": "TCMData",
+  "e": 12345.678, "f": 50.02, "ap": 3456.789,
+  "va": 230.5, "vb": 229.8, "vc": 231.2,
+  "ca": 5.123, "cb": 4.987, "cc": 5.456,
+  "pf": 0.956, "rp": 234.567
+}
 ```
 
-**Bands:** &lt;0.3 Safe · &lt;0.6 Monitor · &lt;0.8 High risk · ≥0.8 Likely failure soon (operational label, not a warranty).
+**Running the simulator:**
+```bash
+cd microservice
+pip install -r requirements.txt
+python meter_simulator.py --interval 5 --devices METER-001,METER-002,METER-003
+```
 
-### Rule-based alerts (summary)
+### 2. HiveMQ → Node.js Server (Single MQTT Subscription)
 
-Thresholds include: frequency **49.5–50.5 Hz**; voltage per phase **210–245 V**; voltage spread between phases **>10 V**; phase current imbalance **(I_max − I_avg)/I_avg × 100** with warn **>10%** / critical **>20%**; load spread **(I_max − I_min)/I_max > 0.3**; PF tiers; active-power step **±30%** vs previous sample; reactive-power ratio and trends; combined overload heuristics (see `server/services/alertService.js`). Each alert gets **technical** `message` text plus **consumer** fields (`plainTitle`, `plainSummary`, `whatYouCanDo`) for non-technical operators.
+The server connects to HiveMQ on startup and subscribes to **`meter/live/+`** — a single wildcard subscription that captures data from ALL devices at once. This is the key scalability pattern: **one subscription handles unlimited devices**.
 
-### API surface for alerts
+When a message arrives on `meter/live/METER-001`:
+1. The topic is parsed to extract `deviceId`
+2. The payload is **normalized** (numeric coercion, PF clamp, AP reconstruction if zero)
+3. The reading is **ingested into the in-memory data store** (`dataStore.js`)
+4. The reading is **immediately emitted** via Socket.IO to:
+   - The `device:{deviceId}` room (for per-device subscribers)
+   - The `all-devices` room (for fleet-wide dashboard)
+5. A device status update is broadcast with `lastSeen` timestamp
 
-* `GET /alerts/:deviceId/timeline?from=&to=&limit=&ratedCapacity=` — CSV-backed series with per-timestamp **health**, **risk**, and enriched alerts.
-* `GET /alerts/:deviceId/live?ratedCapacity=` — latest mock-live reading with **health**, **risk**, and enriched alerts (uses an in-memory ring buffer for the risk window).
+**There is NO CSV file dependency.** All data comes from MQTT in real-time. Historical data accumulates in memory as readings arrive (up to 5000 per device, configurable).
 
-### Related configuration
+### 3. Server → Frontend (WebSocket + REST)
 
-* `NOMINAL_VOLTAGE` — used in health and some alert logic.
-* `RATED_PHASE_CURRENT_A` — server reference for ampacity-related thinking (see `.env.example`); client can mirror with `VITE_RATED_PHASE_CURRENT_A` for live deviation readouts.
+**WebSocket (Socket.IO) — Real-time path:**
+- Frontend connects once and joins the `all-devices` room
+- Every MQTT message is forwarded instantly — **zero polling delay**
+- The socket connection persists across page navigation (LiveProvider wraps the entire app shell)
+- If a device stops sending data, a timer shows "X seconds since last data"
+- Reconnection is automatic with exponential backoff
 
----
+**REST API — Computed analytics path:**
+- Dashboard, Insights, Alerts endpoints compute analytics from the accumulated in-memory data store
+- These are called on page load and periodically refreshed
+- All insight calculations (peak demand, PF analysis, phase imbalance, anomalies, load curves, etc.) run against real accumulated readings
 
-## Frontend capabilities (dashboard, live, insights, alerts)
+### 4. Frontend Architecture
 
-* **Live WebSocket** opens after login for any main route: `LiveProvider` wraps the app shell (not only the Live page), so the **Dashboard** “Live phase readings” prefer the stream and show connection state; snapshot data fills in until the first message.
-* **Live page** charts **max phase voltage** and **max phase current** over time, with reference band and nominal line, plus real-time **voltage drift %**, **stress toward limits %**, and **current vs reference %** (`VITE_NOMINAL_VOLTAGE`, `VITE_RATED_PHASE_CURRENT_A` in `client/.env.example`).
-* **Insights** adds **time-series mini-charts** on cards, with red markers where values are stressed (thresholds / percentiles / anomaly timestamps).
-* **Alerts** page: health/risk chart over the CSV window, live polling, **plain-language** alert cards, **collapsible** lists (newest / “last in batch” pinned, older entries folded), and a **single reading timestamp** for live so times do not appear to “creep” on every poll.
-* **Data** API adds `GET /data/:deviceId/historical/recent?limit=` for efficient chart slices.
+**Key design decisions:**
+- **LiveProvider wraps the entire app** — WebSocket stays connected even when switching pages
+- **All devices stream simultaneously** — the `all-devices` room receives every reading from every meter
+- **Per-device history** is maintained client-side (120 samples rolling buffer per device)
+- **Dashboard shows cards for ALL devices** — each card shows live readings, online status, and "time since last data"
+- **Click a device card** to select it and see detailed analytics below
 
----
+#### Persistent React state across routes (easier page switching)
 
-## Deployment & Sample Data Considerations
+Feature providers are mounted **once** around `AppLayout`, not inside each route. That way navigating between Dashboard, Historical, Live, Insights, and Alerts **does not unmount** those providers, so fetched data and UI state are retained:
 
-### Hosted deployment (DigitalOcean)
+| Provider | What stays in memory |
+|----------|------------------------|
+| `DashboardProvider` | Last dashboard payload **per device** (`dashboardByDevice`). Returning to the dashboard shows cached data immediately; the selected device still refreshes on a timer in the background. |
+| `InsightsProvider` | Insights payload **per device** (`insightsByDevice`). Switching pages and coming back does not wipe analytics. |
+| `HistoricalProvider` | Consumption chart, table page, and date-range filters are **snapshotted per device** when you change the device dropdown, then restored when you select that device again. |
+| `AlertsProvider` | Timeline and live alert snapshot **per device**, plus rated-capacity input. |
+| `LiveProvider` | Always global — live stream and per-device rolling history are never tied to a single page. |
 
-[LIVE ACCESS HERE](https://3-phase-meter-dashboard.vercel.app/)
+Together with the persistent Socket.IO session, this makes route changes lightweight: you are not “starting cold” on every navigation.
 
-The application is deployed with the **backend running on DigitalOcean** in a **managed, serverless-style app service** environment (hosted service model rather than a long-running VPS you manage by hand). That setup favors a small artifact, predictable memory use, and simple operations.
+#### Fleet dashboard — “Unstable” meters (insight-aligned thresholds)
 
-For that deployment, telemetry is intentionally **not** loaded from the real multi-hundred-megabyte export. The backend uses the **mock / sample CSV** (for example `sample-readings.csv`) so the service stays light, starts reliably, and matches the constraints of a serverless-oriented runtime. The full **~500MB+** single-file telemetry CSV is supported by the codebase for heavy local or dedicated-server testing (see below), but it is **not** what the simplified DigitalOcean deployment uses.
+Each fleet card evaluates the **latest live reading** with `client/src/utils/meterStability.js`. Rules are aligned with the server’s `alertService` / insight logic (frequency band, per-phase voltage limits, voltage spread between phases, current imbalance %, load imbalance, phase-loss heuristics, overload vs rated capacity, low PF tiers, reactive-power share, and a **THD-style estimate from PF** matching `insightService`):
 
-> **NOTE:** By default in development, sample data is also used (`sample-readings.csv`) for a small local footprint.
+- **Unstable** badge: at least one rule breached.
+- **Severity**: `critical` vs `warning` (affects card border, tint, and fleet summary counts).
+- **Fleet summary** (under the page title): counts how many devices are in critical vs warning breach. **Rated capacity** for overload-style checks comes from the same control as Insights (`InsightsProvider` → shared with the fleet view).
 
-When deploying for production or conducting heavy scale testing with the original telemetry logs:
-1. Place your large 500MB+ dataset in the `server/data/` folder.
-2. Change the `.env` variable `CSV_PATH` to point to the large file:
+This is a **client-side snapshot** of the latest sample, not a full re-run of all historical insight endpoints; it gives instant operator feedback on the grid of meters.
+
+## Server startup log (HiveMQ + Socket.IO)
+
+When the backend starts successfully against HiveMQ Cloud, logs look like this:
+
+```
+HiveMQ connected to <cluster>.s1.eu.hivemq.cloud:8883
+Socket.IO server initialized
+Live data service: subscribed to HiveMQ live topic (meter/live/+)
+Live data service: subscribed to HiveMQ historical topic
+Server listening on http://localhost:3000
+Waiting for MQTT data from meter simulators...
+HiveMQ subscribed to meter/live/+
+HiveMQ subscribed to meter/historical/+
+```
+
+The **two MQTT subscriptions** are a single wildcard each (`meter/live/+` and `meter/historical/+`): all meters are covered without opening one subscription per device.
+
+## How Values Are Calculated
+
+### At the Backend (dataStore + insightService + alertService)
+
+**Normalization (`normalizeTelemetryExportRow`):**
+- All numeric fields coerced to `Number`, with fallback to 0
+- Power factor clamped to `|PF|` in [-1, 1]
+- If `ap === 0` but V/I/PF are valid: `ap = (Va×Ia + Vb×Ib + Vc×Ic) × |PF|`
+- Bucket normalized to ISO timestamp
+
+**Health Score (0–100):**
+Penalty model starting at 100, subtracting weighted penalties for:
+- Frequency deviation from 50 Hz (weight 10)
+- Voltage deviation from nominal (weight 15)
+- Current imbalance between phases (weight 20)
+- Power factor loss (weight 25)
+- Reactive power ratio (weight 15)
+- Power spike vs previous reading (weight 15)
+
+**Risk Score (0–1):**
+Rolling window of last 8 readings evaluating:
+- Health drop rate (40%)
+- Variability of AP, PF, voltage (20%)
+- Alert violation accumulation (20%)
+- Health trend slope (20%)
+
+**Insight Calculations:**
+All computed from the accumulated reading arrays per device:
+- Peak demand: max AP across all readings
+- Power factor: average, min, max, low-PF event count
+- Phase imbalance: `(Imax - Iavg) / Iavg × 100`
+- Voltage stability: per-phase std dev, min, max
+- Anomalies: energy drops, PF extremes, voltage sag/swell, frequency deviation, power surges
+- Load curve: hourly average demand by UTC hour
+- THD estimate: `sqrt(1/(cos²PF) - 1) × 100`
+- Capacity utilization: AP vs rated capacity percentage
+
+### At the Frontend (LiveContext enrichment)
+
+Each live sample is enriched with:
+- `maxV`, `minV`: highest/lowest phase voltage
+- `maxA`: highest phase current
+- `voltageDriftPct`: deviation from nominal voltage target
+- `voltageLimitStressPct`: how close to the 210V/245V danger limits
+- `currentVsRatedPct`: peak current vs rated ampacity
+
+## Historical Data Handling
+
+Historical data is the **accumulated live readings stored in memory**. As meters send data, it builds up in the server's data store (up to 5000 readings per device). This means:
+
+1. **No separate historical data fetch needed** — it's the same data that arrived live
+2. **Historical API endpoints** (`/data/:id/historical`, `/data/:id/historical/range`) query this accumulated store
+3. **Bulk historical import** is supported via `meter/historical/+` MQTT topic — the `bulk_publish.py` script can replay CSV data through the broker
+4. **On server restart**, history resets — for persistence, use `bulk_publish.py` to replay data, or add a database layer
+
+## Scalability
+
+### How many meters can connect at once?
+
+**MQTT subscription**: One wildcard subscription (`meter/live/+`) handles unlimited devices. HiveMQ Cloud supports thousands of concurrent publishers on a single topic pattern.
+
+**Server memory**: Each reading is ~200 bytes. At 5000 readings × 100 devices = ~100MB. Adjustable via `MAX_HISTORY_PER_DEVICE`.
+
+**WebSocket fan-out**: Socket.IO rooms efficiently broadcast to connected clients. The `all-devices` room means one emit per reading reaches all dashboard viewers.
+
+**Frontend**: React state management handles per-device data independently. The rolling buffer (120 samples) keeps memory bounded regardless of how long the session runs.
+
+### Subscription model
+
+The server subscribes **once** to `meter/live/+` — this is a single MQTT subscription that matches all device topics. There is no per-device subscription at the server level. When a new meter starts publishing to `meter/live/NEW-DEVICE`, the server automatically picks it up and the frontend discovers it in real-time.
+
+On the frontend, the Socket.IO client joins the `all-devices` room once on connection. Individual device rooms (`device:{id}`) exist for targeted subscriptions but the fleet dashboard uses the global room.
+
+## Project Structure
+
+```
+├── microservice/
+│   ├── meter_simulator.py      # Live MQTT publisher (simulates N meters)
+│   ├── bulk_publish.py         # Batch historical replay from CSV via MQTT
+│   ├── requirements.txt        # paho-mqtt, python-dotenv
+│   └── .env                    # HiveMQ credentials
+│
+├── server/
+│   ├── app.js                  # Express + Socket.IO + MQTT startup
+│   ├── config/
+│   │   ├── index.js            # Environment config
+│   │   ├── hivemq.js           # MQTT client with wildcard subscription
+│   │   └── socket.js           # Socket.IO with all-devices room
+│   ├── services/
+│   │   ├── dataStore.js        # In-memory per-device data store
+│   │   ├── liveDataService.js  # MQTT → dataStore → Socket.IO bridge
+│   │   ├── insightService.js   # Analytics computations
+│   │   └── alertService.js     # Health, risk, and alert engine
+│   ├── controller/             # REST endpoint handlers
+│   ├── routes/                 # Express route definitions
+│   ├── middlewares/            # JWT auth, logging, error handling
+│   └── .env                    # Server config + HiveMQ credentials
+│
+├── client/
+│   ├── src/
+│   │   ├── App.jsx             # Route definitions with LiveProvider wrapping all
+│   │   ├── context/
+│   │   │   ├── LiveContext.jsx  # Global WebSocket: subscribes to ALL devices
+│   │   │   ├── DeviceContext.jsx# Device list + selection with polling
+│   │   │   ├── DashboardContext.jsx
+│   │   │   ├── InsightsContext.jsx
+│   │   │   └── HistoricalContext.jsx
+│   │   ├── pages/
+│   │   │   ├── DashboardPage.jsx   # Fleet view: cards per device + detail
+│   │   │   ├── LivePage.jsx        # Real-time charts, instant data
+│   │   │   ├── InsightsPage.jsx    # Analytics from accumulated data
+│   │   │   ├── AlertsPage.jsx      # Health/risk timeline + live alerts
+│   │   │   ├── HistoricalPage.jsx  # Browse accumulated readings
+│   │   │   └── AdminPage.jsx       # System status
+│   │   ├── components/
+│   │   │   ├── AppLayout.jsx       # Sidebar with connection status
+│   │   │   └── InsightMiniChart.jsx
+│   │   └── services/
+│   │       └── api.js              # REST client + Socket.IO factory
+│   └── .env                        # VITE_API_URL
+│
+└── README.md
+```
+
+## Getting Started
+
+### Prerequisites
+- Node.js 18+
+- Python 3.8+ (for meter simulator)
+- HiveMQ Cloud account (free tier works)
+
+### Setup
+
+**1. Configure HiveMQ credentials:**
+
+Create `.env` files in `server/` and `microservice/` with:
    ```env
-   CSV_PATH=./data/telemetry_export.csv
-   ```
-3. Restart the server. The internal memory map will automatically load the large dataset dynamically.
-*(Alternatively, you can trigger `POST /admin/reload-csv` to instruct the server to remap the active load without taking Node offline).*
+HIVE_MQ_HOST=your-cluster.hivemq.cloud
+HIVE_MQ_PORT=8883
+HIVE_MQ_USERNAME=your-username
+HIVE_MQ_PASSWORD=your-password
+```
 
----
+**2. Start the server:**
+```bash
+cd server
+npm install
+npm run dev
+```
+
+**3. Start the meter simulator:**
+```bash
+cd microservice
+pip install -r requirements.txt
+python meter_simulator.py --interval 5 --devices METER-001,METER-002,METER-003
+```
+
+**4. Start the frontend:**
+```bash
+cd client
+npm install
+npm run dev
+```
+
+Open `http://localhost:5173` — login and watch live data appear instantly on the fleet dashboard.
+
+### Environment Variables
+
+**Server (`server/.env`):**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `3000` | HTTP server port |
+| `HIVE_MQ_HOST` | — | HiveMQ Cloud hostname |
+| `HIVE_MQ_PORT` | `8883` | MQTTS port |
+| `HIVE_MQ_USERNAME` | — | MQTT username |
+| `HIVE_MQ_PASSWORD` | — | MQTT password |
+| `JWT_SECRET` | `change-me-in-env` | JWT signing secret |
+| `CORS_ORIGIN` | `http://localhost:5173` | Allowed CORS origin |
+| `NOMINAL_VOLTAGE` | `230` | Reference voltage for health calculations |
+| `RATED_PHASE_CURRENT_A` | `100` | Reference ampacity |
+
+**Client (`client/.env`):**
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `VITE_API_URL` | `http://localhost:3000` | Backend API URL |
+| `VITE_NOMINAL_VOLTAGE` | `230` | UI voltage reference |
+| `VITE_RATED_PHASE_CURRENT_A` | `100` | UI current reference |
+
+## API Endpoints
+
+All protected routes require `Authorization: Bearer <token>`.
+
+### Auth (`/auth`)
+- `POST /auth/login` — Get access + refresh tokens
+- `POST /auth/refresh` — Rotate tokens
+- `POST /auth/logout` — Revoke refresh token
+
+### Devices (`/devices`)
+- `GET /devices` — List all discovered devices with online status
+
+### Dashboard (`/dashboard`)
+- `GET /dashboard/all` — Fleet overview: all device statuses + latest readings
+- `GET /dashboard/:deviceId` — Full dashboard payload for one device
+
+### Data (`/data/:deviceId`)
+- `GET .../historical` — Paginated readings
+- `GET .../historical/recent?limit=400` — Last N readings
+- `GET .../historical/range?from=&to=` — Time range filter
+- `GET .../historical/summary` — Min/max/avg statistics
+- `GET .../historical/consumption?interval=hourly|daily` — Energy consumption
+- `GET .../live` — Latest reading snapshot
+
+### Insights (`/insights/:deviceId`)
+- Peak demand, energy cost, power factor, phase imbalance, voltage stability, reactive power, frequency stability, anomalies, load profile, harmonic distortion, daily load curve, capacity utilization
+
+### Alerts (`/alerts/:deviceId`)
+- `GET .../timeline` — Historical health/risk/alerts series
+- `GET .../live` — Current health/risk snapshot with plain-language alerts
+
+### Admin (`/admin`)
+- `GET /admin/users` — List users
+- `GET /admin/status` — System stats + device count
 
 ## Managing Users
 
-Access to the system requires JWT-based authentication. Users are natively defined in a local JSON configuration rather than an external database dependency. 
+Users are stored in `server/users.config.json` with bcrypt-hashed passwords:
 
-### How to Add a New User
-1. Navigate to the `server/users.config.json` file.
-2. Create a new user object inside the `users` array containing `username`, `passwordHash`, and `role`. 
-3. The password must be secured using `bcrypt` (e.g. 10 salt rounds). 
-   *(You can quickly generate a bcrypt hash using a simple Node.js script: `console.log(require('bcrypt').hashSync('your_target_password', 10))`).*
-4. Example structure:
-   ```json
-   {
-      "username": "new_viewer",
-      "passwordHash": "$2b$10$YourGeneratedBcryptHashHere...",
-      "role": "viewer" // or "admin"
-   }
-   ```
-5. Save the file and restart the server so the new auth credentials take effect.
-
----
-
-## API Endpoints Overview
-
-All protected bounds sit behind an `authenticateAccessToken` middleware. Requests to `/devices`, `/data`, `/insights`, `/dashboard`, `/alerts`, and `/admin` require an `Authorization: Bearer <token>` header. Admin endpoints additionally require an `admin` role token block.
-
-All responses follow a unified envelope schema:
 ```json
 {
-  "success": true,
-  "data": { ... } 
-}
-// OR on error
-{
-  "success": false,
-  "error": { "message": "...", "code": 500 }
+  "users": [
+    {
+      "username": "admin",
+      "passwordHash": "$2b$10$...",
+      "role": "admin"
+    }
+  ]
 }
 ```
 
-### Authentication (`/auth`)
-* `POST /auth/login`
-  * Body: `{ "username": "...", "password": "..." }`
-  * Response Data: `{ "accessToken": "...", "refreshToken": "...", "user": { "username": "...", "role": "..." } }`
-* `POST /auth/refresh`
-  * Body: `{ "refreshToken": "..." }`
-  * Response Data: `{ "accessToken": "..." }`
-* `POST /auth/logout`
-  * Body: `{ "refreshToken": "..." }`
-  * Response Data: `{ "message": "Logged out successfully" }`
-
-### Devices (`/devices`)
-* `GET /devices`
-  * Response Data: Array of available `deviceId` strings natively detected in CSV bounds.
-* `GET /devices/:deviceId/info`
-  * Response Data: Basic bounds metadata e.g. `{ "deviceId": "...", "firstSeen": "...", "lastSeen": "...", "totalReadings": 12000 }`.
-
-### Dashboard (`/dashboard`)
-* `GET /dashboard/:deviceId`
-  * Response Data: A heavily abstracted composition of current snapshot data, aggregated core insights (peak demand, imbalances, recent anomalies), and recent numerical history to immediately populate the main frontend UI panel.
-
-### Telemetry Data (`/data/:deviceId`)
-* `GET /.../historical`
-  * Query: `?page=1&limit=50`
-  * Response Data: `{ "page": 1, "limit": 50, "total": 12000, "totalPages": 240, "data": [...] }`
-* `GET /.../historical/recent`
-  * Query: `?limit=400` (capped server-side)
-  * Response Data: `{ "limit", "total", "data": [ ... last N rows ] }` for charts and light clients.
-* `GET /.../historical/range`
-  * Query: `?from=ISO_DATE&to=ISO_DATE`
-  * Response Data: Chronological list of raw array nodes passing strict interval rules.
-* `GET /.../historical/summary`
-  * Response Data: Deep min, max, avg reduction dictionary across properties like voltage and apparent power.
-* `GET /.../historical/consumption`
-  * Query: `?interval=hourly|daily`
-  * Response Data: Chronological buckets holding calculated `consumedKwh`.
-* `GET /.../live`
-  * Response Data: Current synthesized active data snapshot acting as a single telemetry row.
-* `WS /.../live/stream`
-  * *WebSocket Protocol Request*: Listens on `ws://.../data/:deviceId/live/stream`. Continually outputs live metric row structures.
-
-### Analytics Insights (`/insights/:deviceId`)
-* `GET /.../peak-demand`: Highest recorded kW spikes analysis.
-* `GET /.../energy-cost?unitPrice=0.15`: Theoretical monetary burn-down tracking map against power usage.
-* `GET /.../power-factor`: Total efficacy indices and discrepancy flags based on aggregate averages.
-* `GET /.../phase-imbalance`: Variances calculated between phase tracks (Va/Vb/Vc and Ia/Ib/Ic) detecting grid skewing.
-* `GET /.../voltage-stability?nominalVoltage=230`: Dip and swell assessment counting events triggering past grid specifications.
-* `GET /.../reactive-power`: Summary analysis tracking strictly vars and reactive power waste margins.
-* `GET /.../frequency-stability`: Variance counts against 50Hz/60Hz grid standards.
-* `GET /.../anomalies`: Automatically flagged extreme dataset bursts scaling above deviation bands.
-* `GET /.../load-profile`: Distribution mapping revealing the ratio of heavy, moderate, and low demand periods.
-* `GET /.../harmonic-distortion`: Evaluated deductions predicting potential distortion impacts.
-* `GET /.../daily-load-curve`: Averaged hourly behavior plotting base load outlines vs active bounds.
-* `GET /.../capacity-utilization?ratedCapacity=X`: Percentage stress evaluation against theoretical peak limit bounds to highlight overlaod warnings.
-
-### Alerts & health (`/alerts/:deviceId`)
-
-* `GET /.../timeline?from=&to=&limit=&ratedCapacity=` — time-ordered **health**, **risk**, and **consumer-enriched** alerts over CSV-backed readings.
-* `GET /.../live?ratedCapacity=` — one **live** snapshot (mock generator) with health, risk, and plain-language alert copy.
-
-### Admin Tools (`/admin`) *(Requires Admin Role)*
-* `GET /admin/users`
-  * Response Data: Complete array of user identities (password hashes are intentionally stripped by controller).
-* `GET /admin/status`
-  * Response Data: Current node runtime analytics, allocated memory footprint, heap statistics tracking active CSV load size in bytes.
-* `POST /admin/reload-csv`
-  * Response Data: Triggers the internal datastore to flush all records and re-parse the latest designated CSV.
+Generate a password hash: `node -e "console.log(require('bcryptjs').hashSync('password', 10))"`

@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { parse } from 'csv-parse';
 import { config } from '../config/index.js';
+import { hivemqClient } from '../config/hivemq.js';
 import { logger } from '../common/logger.js';
 
 const NUMERIC_FIELDS = ['e', 'f', 'ap', 'ca', 'cb', 'cc', 'pf', 'rp', 'va', 'vb', 'vc'];
@@ -61,11 +62,41 @@ export const normalizeTelemetryExportRow = (row) => {
 let records = [];
 const byDevice = new Map();
 
+const ingestRow = (row) => {
+  const normalized = normalizeTelemetryExportRow(row);
+  records.push(normalized);
+  if (!byDevice.has(normalized.deviceid)) byDevice.set(normalized.deviceid, []);
+  byDevice.get(normalized.deviceid).push(normalized);
+  return normalized;
+};
 
-const initialize = () =>
+const ingestBatch = (rows) => {
+  const results = [];
+  for (const row of rows) {
+    results.push(ingestRow(row));
+  }
+  return results;
+};
+
+/**
+ * Seed data from CSV file as a fallback, then subscribe to HiveMQ for
+ * historical batches. The CSV acts as the initial data source; subsequent
+ * data arrives from the bulk_publish.py script via MQTT.
+ */
+const initialize = async () => {
+  await loadCsvFallback();
+  subscribeHistorical();
+  getLiveService().catch(() => {});
+};
+
+const loadCsvFallback = () =>
   new Promise((resolve, reject) => {
-    const rows = [];
+    if (!fs.existsSync(config.csvPath)) {
+      logger.warn(`CSV file not found at ${config.csvPath} — starting with empty dataset`);
+      return resolve();
+    }
 
+    const rows = [];
     const parser = fs
       .createReadStream(config.csvPath, { encoding: 'utf-8' })
       .pipe(
@@ -93,10 +124,28 @@ const initialize = () =>
         byDevice.get(record.deviceid).push(record);
       }
 
-      logger.info(`Loaded ${records.length} readings across ${byDevice.size} device(s)`);
+      logger.info(`CSV loaded: ${records.length} readings across ${byDevice.size} device(s)`);
       resolve();
     });
   });
+
+/**
+ * Subscribe to HiveMQ historical topic. When bulk_publish.py sends batches,
+ * they get ingested into the in-memory store (same shape the rest of the
+ * app expects).
+ */
+const subscribeHistorical = () => {
+  try {
+    hivemqClient.subscribe(config.hivemq.topics.historical, (topic, payload) => {
+      const deviceId = topic.split('/').pop();
+      const rows = Array.isArray(payload) ? payload : [payload];
+      const ingested = ingestBatch(rows);
+      logger.info(`HiveMQ historical: ingested ${ingested.length} rows for ${deviceId}`);
+    });
+  } catch {
+    logger.warn('HiveMQ not connected — historical subscription deferred');
+  }
+};
 
 const getDeviceReadings = (deviceId) => {
   const data = byDevice.get(deviceId);
@@ -104,7 +153,27 @@ const getDeviceReadings = (deviceId) => {
   return data;
 };
 
-const getDevices = () => Array.from(byDevice.keys()).sort();
+let _liveServiceRef = null;
+
+const getLiveService = async () => {
+  if (!_liveServiceRef) {
+    const mod = await import('./liveDataService.js');
+    _liveServiceRef = mod;
+  }
+  return _liveServiceRef;
+};
+
+const getDevices = () => {
+  const historical = Array.from(byDevice.keys());
+  let liveIds = [];
+  try {
+    if (_liveServiceRef) {
+      liveIds = _liveServiceRef.getConnectedDeviceIds();
+    }
+  } catch { /* not yet initialized */ }
+  const merged = new Set([...historical, ...liveIds]);
+  return Array.from(merged).sort();
+};
 
 const getDeviceInfo = (deviceId) => {
   const data = getDeviceReadings(deviceId);
@@ -204,6 +273,8 @@ const getConsumption = (deviceId, interval = 'hourly') => {
 export const csvDataService = {
   initialize,
   normalizeTelemetryExportRow,
+  ingestRow,
+  ingestBatch,
   getDeviceReadings,
   getDevices,
   getDeviceInfo,
@@ -214,7 +285,6 @@ export const csvDataService = {
   getConsumption
 };
 
-// Also export individual functions for direct imports
 export {
   initialize as initializeCsvData,
   getDeviceReadings,

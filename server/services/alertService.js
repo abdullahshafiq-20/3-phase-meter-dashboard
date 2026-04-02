@@ -1,5 +1,5 @@
 import { config } from '../config/index.js';
-import { getDeviceReadings, normalizeTelemetryExportRow } from './csvDataService.js';
+import { getDeviceReadings, normalizeTelemetryExportRow } from './dataStore.js';
 import { getLatestLiveReading } from './liveDataService.js';
 
 /** @typedef {'critical' | 'warning' | 'info'} AlertSeverity */

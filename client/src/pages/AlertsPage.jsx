@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useDevice } from '../context/DeviceContext';
-import { api } from '../services/api';
+import { useAlerts } from '../context/AlertsContext';
+import { CHART_TIME_PRESETS } from '../utils/timeWindow';
 import {
   ResponsiveContainer,
   ComposedChart,
@@ -12,8 +13,6 @@ import {
   Legend
 } from 'recharts';
 import { Bell, Activity, Radio, RefreshCw, ChevronDown } from 'lucide-react';
-
-const POLL_MS = 10_000;
 
 function severityStyle(sev) {
   if (sev === 'critical') return 'bg-red-alarm/15 text-red-alarm border-red-alarm/30';
@@ -80,58 +79,26 @@ function CollapsePanel({ id, title, subtitle, defaultOpen, children }) {
 
 export default function AlertsPage() {
   const { selectedDevice } = useDevice();
-  const [ratedCapacity, setRatedCapacity] = useState(10000);
-  const [timeline, setTimeline] = useState(null);
-  const [live, setLive] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [liveLoading, setLiveLoading] = useState(false);
-  const [error, setError] = useState(null);
-
-  const loadTimeline = useCallback(async () => {
-    if (!selectedDevice) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await api.getAlertsTimeline(selectedDevice, {
-        limit: 1500,
-        ratedCapacity
-      });
-      setTimeline(res.data);
-    } catch (err) {
-      console.error(err);
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
-  }, [selectedDevice, ratedCapacity]);
-
-  const pollLive = useCallback(async () => {
-    if (!selectedDevice) return;
-    setLiveLoading(true);
-    try {
-      const res = await api.getAlertsLive(selectedDevice, ratedCapacity);
-      setLive(res.data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLiveLoading(false);
-    }
-  }, [selectedDevice, ratedCapacity]);
-
-  useEffect(() => {
-    loadTimeline();
-  }, [loadTimeline]);
-
-  useEffect(() => {
-    pollLive();
-    const id = setInterval(pollLive, POLL_MS);
-    return () => clearInterval(id);
-  }, [pollLive]);
+  const {
+    ratedCapacity,
+    setRatedCapacity,
+    timelinePreset,
+    setTimelinePreset,
+    timelineWindowLabel,
+    timeline,
+    live,
+    loading,
+    liveLoading,
+    error,
+    loadTimeline,
+    pollLive
+  } = useAlerts();
 
   const chartData = useMemo(() => {
     if (!timeline?.timeline?.length) return [];
     return timeline.timeline.map((p) => ({
       t: new Date(p.bucket).getTime(),
+      bucket: p.bucket,
       health: p.health,
       risk: p.risk,
       critical: p.criticalCount,
@@ -144,7 +111,6 @@ export default function AlertsPage() {
   const { livePrimary, liveRest } = useMemo(() => {
     const raw = live?.alerts ?? [];
     if (!raw.length) return { livePrimary: null, liveRest: [] };
-    // Last item in the list = last condition evaluated / “most recently surfaced” for this snapshot.
     const primary = raw[raw.length - 1];
     const rest = raw.length > 1 ? raw.slice(0, -1) : [];
     return { livePrimary: primary, liveRest: rest };
@@ -167,7 +133,7 @@ export default function AlertsPage() {
           </h2>
           <p className="text-grid-400 text-sm mt-1 max-w-2xl">
             {selectedDevice} — Summaries are written for <strong>operators and managers</strong> (not electricians’ jargon).
-            Technical codes appear in small print for your support team.
+            Technical codes appear in small print for your support team. Data is kept in memory when you switch pages.
           </p>
         </div>
         <div className="flex flex-wrap items-end gap-3">
@@ -240,7 +206,6 @@ export default function AlertsPage() {
                   <p className="text-xs text-grid-600 mb-3 rounded-lg bg-slate-100/80 border border-grid-700/30 px-3 py-2">
                     <span className="font-semibold text-slate-800">Reading time:</span>{' '}
                     {formatTs(live.bucket)}
-                    <span className="text-grid-500"> — all items below are from this single snapshot (time does not apply to “future” polls).</span>
                   </p>
                   <ul className="space-y-3">
                     {livePrimary && (
@@ -268,11 +233,31 @@ export default function AlertsPage() {
         )}
       </div>
 
-      {/* CSV timeline summary */}
+      {/* Historical timeline */}
       <div className="glass-panel p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <Activity className="w-4 h-4 text-cyan-electric" />
-          <h3 className="text-sm font-semibold text-slate-900">Historical window (CSV)</h3>
+        <div className="flex flex-col gap-4 mb-4">
+          <div className="flex items-center gap-2">
+            <Activity className="w-4 h-4 text-cyan-electric" />
+            <h3 className="text-sm font-semibold text-slate-900">Historical window (accumulated readings)</h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[10px] uppercase tracking-widest text-grid-500 font-semibold mr-1">Chart window</span>
+            {CHART_TIME_PRESETS.map((p) => (
+              <button
+                key={p.id}
+                type="button"
+                onClick={() => setTimelinePreset(p.id)}
+                className={`px-3 py-1.5 text-xs rounded-lg font-semibold transition-colors cursor-pointer ${
+                  timelinePreset === p.id
+                    ? 'bg-cyan-electric/10 text-cyan-electric border border-cyan-electric/30'
+                    : 'text-grid-500 border border-transparent hover:text-slate-900'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+            <span className="text-xs text-grid-500 ml-auto">{timelineWindowLabel}</span>
+          </div>
         </div>
         {loading || !s ? (
           <div className="flex items-center gap-2 text-grid-500 text-sm py-8">
@@ -323,7 +308,7 @@ export default function AlertsPage() {
                     <YAxis yAxisId="left" domain={[0, 100]} tick={{ fontSize: 10, fill: '#64748b' }} width={36} />
                     <YAxis yAxisId="right" orientation="right" domain={[0, 1]} tick={{ fontSize: 10, fill: '#64748b' }} width={36} />
                     <Tooltip
-                      labelFormatter={(ts) => formatTs(ts)}
+                      labelFormatter={(ts) => formatTs(typeof ts === 'number' ? new Date(ts).toISOString() : ts)}
                       contentStyle={{ fontSize: 12, borderRadius: 8 }}
                     />
                     <Legend wrapperStyle={{ fontSize: 12 }} />
@@ -358,7 +343,7 @@ export default function AlertsPage() {
                       subtitle="Newest event stays visible above; open for older entries."
                       defaultOpen={false}
                     >
-                      <ul className="max-h-[24rem] overflow-y-auto space-y-3 mt-3 pr-1">
+                      <ul className="max-h-96 overflow-y-auto space-y-3 mt-3 pr-1">
                         {recentRest.map((e, i) => (
                           <ConsumerAlertCard
                             key={`${e.bucket}-${e.code}-${i}`}

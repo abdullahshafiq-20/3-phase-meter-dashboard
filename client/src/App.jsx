@@ -5,6 +5,7 @@ import { DashboardProvider } from './context/DashboardContext';
 import { HistoricalProvider } from './context/HistoricalContext';
 import { LiveProvider } from './context/LiveContext';
 import { InsightsProvider } from './context/InsightsContext';
+import { AlertsProvider } from './context/AlertsContext';
 import { ProtectedRoute } from './components/ProtectedRoute';
 import AppLayout from './components/AppLayout';
 import LoginPage from './pages/LoginPage';
@@ -20,63 +21,46 @@ function App() {
     <AuthProvider>
       <BrowserRouter>
         <Routes>
-          {/* Public route — no DeviceProvider here (avoids /devices before login) */}
           <Route path="/login" element={<LoginPage />} />
 
-          {/* Protected routes — devices only load after auth gate */}
           <Route
             path="/"
             element={
               <ProtectedRoute>
                 <DeviceProvider>
                   <LiveProvider>
-                    <AppLayout />
+                    <DashboardProvider>
+                      <HistoricalProvider>
+                        <InsightsProvider>
+                          <AlertsProvider>
+                            <AppLayout />
+                          </AlertsProvider>
+                        </InsightsProvider>
+                      </HistoricalProvider>
+                    </DashboardProvider>
                   </LiveProvider>
                 </DeviceProvider>
               </ProtectedRoute>
             }
           >
-              <Route index element={<Navigate to="/dashboard" replace />} />
-              <Route
-                path="dashboard"
-                element={
-                  <DashboardProvider>
-                    <DashboardPage />
-                  </DashboardProvider>
-                }
-              />
-              <Route
-                path="historical"
-                element={
-                  <HistoricalProvider>
-                    <HistoricalPage />
-                  </HistoricalProvider>
-                }
-              />
-              <Route path="live" element={<LivePage />} />
-              <Route
-                path="insights"
-                element={
-                  <InsightsProvider>
-                    <InsightsPage />
-                  </InsightsProvider>
-                }
-              />
-              <Route path="alerts" element={<AlertsPage />} />
+            <Route index element={<Navigate to="/dashboard" replace />} />
+            <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="historical" element={<HistoricalPage />} />
+            <Route path="live" element={<LivePage />} />
+            <Route path="insights" element={<InsightsPage />} />
+            <Route path="alerts" element={<AlertsPage />} />
 
-              {/* Admin-only route */}
-              <Route
-                path="admin"
-                element={
-                  <ProtectedRoute requireAdmin={true}>
-                    <AdminPage />
-                  </ProtectedRoute>
-                }
-              />
-            </Route>
+            <Route
+              path="admin"
+              element={
+                <ProtectedRoute requireAdmin={true}>
+                  <AdminPage />
+                </ProtectedRoute>
+              }
+            />
+          </Route>
 
-            {/* Fallback */}
-            <Route path="*" element={<Navigate to="/" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </BrowserRouter>
     </AuthProvider>

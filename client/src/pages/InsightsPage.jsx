@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react';
 import { useDevice } from '../context/DeviceContext';
 import { useInsights } from '../context/InsightsContext';
 import { api } from '../services/api';
+import { CHART_TIME_PRESETS, getWindowFromPreset } from '../utils/timeWindow';
 import { InsightMiniChart, InsightHourlyBarChart, percentileHighAp } from '../components/InsightMiniChart';
 import {
-  TrendingUp, DollarSign, Gauge, AlertTriangle, Zap, Radio, Activity, BarChart3, Waves, Target
+  TrendingUp, DollarSign, Gauge, AlertTriangle, Zap, Radio, Activity, BarChart3, Waves, Target, X
 } from 'lucide-react';
 
 function InsightCard({ title, icon, color = '#00e5ff', loading, children }) {
@@ -47,6 +48,12 @@ function percentileHighByKey(rows, key, p = 0.92) {
   return (r) => Number.isFinite(r[key]) && r[key] >= thr;
 }
 
+function rowTimeMs(r) {
+  const raw = r.bucket ?? r.timestamp;
+  const t = new Date(raw).getTime();
+  return Number.isNaN(t) ? NaN : t;
+}
+
 export default function InsightsPage() {
   const { selectedDevice } = useDevice();
   const {
@@ -55,16 +62,29 @@ export default function InsightsPage() {
     unitPrice,
     setUnitPrice,
     ratedCapacity,
-    setRatedCapacity
+    setRatedCapacity,
+    timePreset,
+    setTimePreset,
+    windowLabel,
   } = useInsights();
 
   const [recent, setRecent] = useState([]);
+  const [chartExpand, setChartExpand] = useState(null);
 
   useEffect(() => {
     let cancelled = false;
+    if (!selectedDevice) {
+      setRecent([]);
+      return;
+    }
+    const win = getWindowFromPreset(timePreset);
     (async () => {
       try {
-        const res = await api.getRecentReadings(selectedDevice, 520);
+        const res = await api.getRange(
+          selectedDevice,
+          win.from ?? undefined,
+          win.to ?? undefined
+        );
         const rows = res.data?.data ?? [];
         if (!cancelled) setRecent(rows);
       } catch (e) {
@@ -75,7 +95,7 @@ export default function InsightsPage() {
     return () => {
       cancelled = true;
     };
-  }, [selectedDevice]);
+  }, [selectedDevice, timePreset]);
 
   const anomalyTimeMs = useMemo(() => {
     const ev = insights.anomalies?.events;
@@ -87,17 +107,35 @@ export default function InsightsPage() {
   const highRp = useMemo(() => percentileHighByKey(recent, 'rp', 0.9), [recent]);
 
   const peakTs = insights.peakDemand?.timestamp;
+  const peakMs = peakTs ? new Date(peakTs).getTime() : NaN;
+  const peakNear = (r) => Number.isFinite(peakMs) && Math.abs(rowTimeMs(r) - peakMs) < 3000;
 
   return (
     <div className="space-y-6">
       <div>
         <h2 className="text-2xl font-extrabold tracking-tight">Insights</h2>
-        <p className="text-grid-400 text-sm mt-1">{selectedDevice} — Analytical deep-dive</p>
+        <p className="text-grid-400 text-sm mt-1">{selectedDevice} — Real-time analytical deep-dive (computed from live accumulated data)</p>
+      </div>
+
+      <div className="glass-panel p-4 flex flex-wrap items-center gap-2">
+        <span className="text-[10px] uppercase tracking-widest text-grid-500 font-semibold mr-2">Time window</span>
+        {CHART_TIME_PRESETS.map((p) => (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => setTimePreset(p.id)}
+            className={`px-3 py-1.5 text-xs rounded-lg font-semibold transition-colors cursor-pointer ${
+              timePreset === p.id ? 'bg-cyan-electric/10 text-cyan-electric border border-cyan-electric/30' : 'text-grid-500 border border-transparent hover:text-slate-900'
+            }`}
+          >
+            {p.label}
+          </button>
+        ))}
+        <span className="text-xs text-grid-500 ml-auto">{windowLabel}</span>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
 
-        {/* Peak Demand */}
         <InsightCard title="Peak Demand" icon={TrendingUp} color="#ffab00" loading={loading}>
           {insights.peakDemand && <>
             <MetricRow label="Peak Active Power" value={insights.peakDemand.peakApW?.toLocaleString()} unit="W" />
@@ -108,13 +146,23 @@ export default function InsightsPage() {
                 yKey="ap"
                 color="#ffab00"
                 yLabel="W"
-                highlight={(r) => (peakTs != null && r.bucket === peakTs) || highAp(r)}
+                highlight={(r) => peakNear(r) || highAp(r)}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Peak demand — active power',
+                    series: recent,
+                    yKey: 'ap',
+                    color: '#ffab00',
+                    yLabel: 'W',
+                    highlight: (r) => peakNear(r) || highAp(r),
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Energy Cost */}
         <InsightCard title="Energy Cost" icon={DollarSign} color="#00e676" loading={loading}>
           <div className="mb-3">
             <label className="block text-[10px] uppercase tracking-widest text-grid-500 font-semibold mb-1">Unit Price ($/kWh)</label>
@@ -132,12 +180,22 @@ export default function InsightsPage() {
                 color="#00e676"
                 yLabel="kWh"
                 highlight={(r) => highAp(r)}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Energy cost context — cumulative kWh',
+                    series: recent,
+                    yKey: 'e',
+                    color: '#00e676',
+                    yLabel: 'kWh',
+                    highlight: (r) => highAp(r),
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Power Factor */}
         <InsightCard title="Power Factor" icon={Gauge} color="#00e5ff" loading={loading}>
           {insights.powerFactor && <>
             <MetricRow label="Average PF" value={insights.powerFactor.avgPf?.toFixed(4)} warn={insights.powerFactor.avgPf < 0.85} />
@@ -150,12 +208,22 @@ export default function InsightsPage() {
                 yKey="pf"
                 color="#00e5ff"
                 highlight={(r) => r.pf < 0.85}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Power factor',
+                    series: recent,
+                    yKey: 'pf',
+                    color: '#00e5ff',
+                    yLabel: 'PF',
+                    highlight: (r) => r.pf < 0.85,
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Phase Imbalance */}
         <InsightCard title="Phase Imbalance" icon={Activity} color="#7c4dff" loading={loading}>
           {insights.phaseImbalance && <>
             <MetricRow label="Avg Imbalance" value={`${insights.phaseImbalance.avgImbalancePercent?.toFixed(2)}%`} />
@@ -168,12 +236,22 @@ export default function InsightsPage() {
                 color="#7c4dff"
                 yLabel="%"
                 highlight={(r) => r.imbalancePercent > 10}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Phase imbalance',
+                    series: insights.phaseImbalance.timeline,
+                    yKey: 'imbalancePercent',
+                    color: '#7c4dff',
+                    yLabel: '%',
+                    highlight: (r) => r.imbalancePercent > 10,
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Voltage Stability */}
         <InsightCard title="Voltage Stability" icon={Zap} color="#ff9100" loading={loading}>
           {insights.voltageStability && <>
             <p className="text-[10px] text-grid-500 mb-2">Nominal: {insights.voltageStability.nominalVoltage}V</p>
@@ -200,12 +278,28 @@ export default function InsightsPage() {
                   const spread = Math.max(...v) - Math.min(...v);
                   return spread > 10 || Math.min(...v) < 210 || Math.max(...v) > 245;
                 }}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Voltage stability — average phase voltage',
+                    series: recent.map((r) => ({ bucket: r.bucket, vavg: (r.va + r.vb + r.vc) / 3 })),
+                    yKey: 'vavg',
+                    color: '#ff9100',
+                    yLabel: 'V',
+                    highlight: (r) => {
+                      const row = recent.find((x) => x.bucket === r.bucket);
+                      if (!row) return false;
+                      const v = [row.va, row.vb, row.vc];
+                      const spread = Math.max(...v) - Math.min(...v);
+                      return spread > 10 || Math.min(...v) < 210 || Math.max(...v) > 245;
+                    },
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Reactive Power */}
         <InsightCard title="Reactive Power" icon={Waves} color="#ff1744" loading={loading}>
           {insights.reactivePower && <>
             <MetricRow label="Avg Reactive Power" value={insights.reactivePower.avgRp?.toFixed(2)} unit="VAR" />
@@ -218,12 +312,22 @@ export default function InsightsPage() {
                 color="#ff1744"
                 yLabel="VAR"
                 highlight={(r) => highRp(r) || (Number.isFinite(r.pf) && r.pf < 0.85 && r.rp > (r.ap || 0) * 0.2)}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Reactive power',
+                    series: recent,
+                    yKey: 'rp',
+                    color: '#ff1744',
+                    yLabel: 'VAR',
+                    highlight: (r) => highRp(r) || (Number.isFinite(r.pf) && r.pf < 0.85 && r.rp > (r.ap || 0) * 0.2),
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Frequency Stability */}
         <InsightCard title="Frequency Stability" icon={Radio} color="#00bcd4" loading={loading}>
           {insights.frequencyStability && <>
             <MetricRow label="Avg Frequency" value={insights.frequencyStability.avgFrequency?.toFixed(4)} unit="Hz" />
@@ -237,12 +341,22 @@ export default function InsightsPage() {
                 color="#00bcd4"
                 yLabel="Hz"
                 highlight={(r) => r.f < 49.5 || r.f > 50.5 || Math.abs(r.f - 50) > 0.2}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Frequency',
+                    series: recent,
+                    yKey: 'f',
+                    color: '#00bcd4',
+                    yLabel: 'Hz',
+                    highlight: (r) => r.f < 49.5 || r.f > 50.5 || Math.abs(r.f - 50) > 0.2,
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Anomalies */}
         <InsightCard title="Anomalies" icon={AlertTriangle} color="#ff1744" loading={loading}>
           {insights.anomalies && <>
             <MetricRow label="Total Events" value={insights.anomalies.totalEvents} warn={insights.anomalies.totalEvents > 50} />
@@ -255,13 +369,23 @@ export default function InsightsPage() {
                 yKey="ap"
                 color="#ff1744"
                 yLabel="W"
-                highlight={(r) => anomalyTimeMs.has(new Date(r.bucket).getTime()) || highAp(r)}
+                highlight={(r) => anomalyTimeMs.has(rowTimeMs(r)) || highAp(r)}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Anomalies — active power',
+                    series: recent,
+                    yKey: 'ap',
+                    color: '#ff1744',
+                    yLabel: 'W',
+                    highlight: (r) => anomalyTimeMs.has(rowTimeMs(r)) || highAp(r),
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Load Profile */}
         <InsightCard title="Load Profile" icon={BarChart3} color="#ffab00" loading={loading}>
           {insights.loadProfile && <>
             <MetricRow label="Avg Demand" value={insights.loadProfile.avgDemandW?.toFixed(1)} unit="W" />
@@ -278,12 +402,22 @@ export default function InsightsPage() {
                 color="#ffab00"
                 yLabel="W"
                 highlight={(r) => highAp(r)}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Load profile — active power',
+                    series: recent,
+                    yKey: 'ap',
+                    color: '#ffab00',
+                    yLabel: 'W',
+                    highlight: (r) => highAp(r),
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Harmonic Distortion */}
         <InsightCard title="THD Estimate" icon={Waves} color="#e040fb" loading={loading}>
           {insights.harmonicDistortion && <>
             <MetricRow label="Avg THD" value={`${insights.harmonicDistortion.avgThdPercent?.toFixed(2)}%`} />
@@ -297,12 +431,22 @@ export default function InsightsPage() {
                 color="#e040fb"
                 yLabel="%"
                 highlight={(r) => r.thdEstimatePercent > 20}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'THD estimate',
+                    series: insights.harmonicDistortion.timeline,
+                    yKey: 'thdEstimatePercent',
+                    color: '#e040fb',
+                    yLabel: '%',
+                    highlight: (r) => r.thdEstimatePercent > 20,
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
 
-        {/* Daily Load Curve */}
         <InsightCard title="Daily Load Curve" icon={BarChart3} color="#7c4dff" loading={loading}>
           {insights.dailyLoadCurve && <>
             <MetricRow
@@ -315,11 +459,19 @@ export default function InsightsPage() {
               value={insights.dailyLoadCurve.offPeakHourUTC == null ? '—' : `${String(insights.dailyLoadCurve.offPeakHourUTC).padStart(2, '0')}:00`}
             />
             <MetricRow label="Off-Peak Avg Demand" value={insights.dailyLoadCurve.offPeakAvgDemandW?.toFixed(1)} unit="W" />
-            <InsightHourlyBarChart dailyLoadCurve={insights.dailyLoadCurve} />
+            <InsightHourlyBarChart
+              dailyLoadCurve={insights.dailyLoadCurve}
+              onExpand={() =>
+                setChartExpand({
+                  kind: 'bar',
+                  title: 'Daily load curve (UTC hours)',
+                  dailyLoadCurve: insights.dailyLoadCurve,
+                })
+              }
+            />
           </>}
         </InsightCard>
 
-        {/* Capacity Utilization */}
         <InsightCard title="Capacity Utilization" icon={Target} color="#00e676" loading={loading}>
           <div className="mb-3">
             <label className="block text-[10px] uppercase tracking-widest text-grid-500 font-semibold mb-1">Rated Capacity (W)</label>
@@ -338,11 +490,62 @@ export default function InsightsPage() {
                 color="#00e676"
                 yLabel="W"
                 highlight={(r) => Number.isFinite(r.ap) && r.ap >= ratedCapacity * 0.85}
+                onExpand={() =>
+                  setChartExpand({
+                    kind: 'line',
+                    title: 'Capacity — active power vs headroom',
+                    series: recent,
+                    yKey: 'ap',
+                    color: '#00e676',
+                    yLabel: 'W',
+                    highlight: (r) => Number.isFinite(r.ap) && r.ap >= ratedCapacity * 0.85,
+                  })
+                }
               />
             )}
           </>}
         </InsightCard>
       </div>
+
+      {chartExpand ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-slate-900/55 backdrop-blur-sm"
+          onClick={() => setChartExpand(null)}
+          role="presentation"
+        >
+          <div
+            className="glass-panel max-w-5xl w-full max-h-[90vh] overflow-y-auto p-6 shadow-2xl border border-grid-700/60"
+            onClick={(e) => e.stopPropagation()}
+            role="dialog"
+            aria-modal="true"
+            aria-label={chartExpand.title}
+          >
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <h3 className="text-lg font-bold text-slate-900">{chartExpand.title}</h3>
+              <button
+                type="button"
+                onClick={() => setChartExpand(null)}
+                className="p-2 rounded-lg border border-grid-700 text-grid-500 hover:text-slate-900 hover:bg-grid-800/50 cursor-pointer"
+                aria-label="Close"
+              >
+                <X size={20} />
+              </button>
+            </div>
+            {chartExpand.kind === 'line' ? (
+              <InsightMiniChart
+                series={chartExpand.series}
+                yKey={chartExpand.yKey}
+                color={chartExpand.color}
+                yLabel={chartExpand.yLabel}
+                height={400}
+                highlight={chartExpand.highlight}
+              />
+            ) : (
+              <InsightHourlyBarChart dailyLoadCurve={chartExpand.dailyLoadCurve} height={360} />
+            )}
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

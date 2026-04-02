@@ -1,4 +1,22 @@
+import { io } from 'socket.io-client';
+
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3000';
+
+let socketInstance = null;
+
+export const getSocket = () => {
+  if (!socketInstance) {
+    socketInstance = io(API_BASE, {
+      transports: ['websocket', 'polling'],
+      autoConnect: false,
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+    });
+  }
+  return socketInstance;
+};
 
 let onUnauthorizedCallback = null;
 
@@ -128,6 +146,7 @@ export const api = {
   getDevices: () => request('/devices'),
   getDeviceInfo: (id) => request(`/devices/${id}/info`),
   getDashboard: (id) => request(`/dashboard/${id}`),
+  getAllDevicesDashboard: () => request('/dashboard/all'),
   getHistorical: (id, page = 1, limit = 50) =>
     request(`/data/${id}/historical?page=${page}&limit=${limit}`),
   getRecentReadings: (id, limit = 400) =>
@@ -136,41 +155,97 @@ export const api = {
     const params = new URLSearchParams();
     if (from) params.set('from', from);
     if (to) params.set('to', to);
-    return request(`/data/${id}/historical/range?${params}`);
+    const qs = params.toString();
+    return request(`/data/${id}/historical/range${qs ? `?${qs}` : ''}`);
   },
   getSummary: (id) => request(`/data/${id}/historical/summary`),
   getConsumption: (id, interval = 'hourly') =>
     request(`/data/${id}/historical/consumption?interval=${interval}`),
   getLiveSnapshot: (id) => request(`/data/${id}/live`),
-  createLiveStream: (id) => {
-    const wsBase = API_BASE.replace(/^http/, 'ws');
-    return new WebSocket(`${wsBase}/data/${id}/live/stream`);
+  getPeakDemand: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/peak-demand${qs ? `?${qs}` : ''}`);
   },
-  getPeakDemand: (id) => request(`/insights/${id}/peak-demand`),
-  getEnergyCost: (id, unitPrice) =>
-    request(`/insights/${id}/energy-cost?unitPrice=${unitPrice}`),
-  getPowerFactor: (id) => request(`/insights/${id}/power-factor`),
-  getPhaseImbalance: (id) => request(`/insights/${id}/phase-imbalance`),
-  getVoltageStability: (id, nominalVoltage) =>
-    request(
-      `/insights/${id}/voltage-stability${
-        nominalVoltage ? `?nominalVoltage=${nominalVoltage}` : ''
-      }`
-    ),
-  getReactivePower: (id) => request(`/insights/${id}/reactive-power`),
-  getFrequencyStability: (id) =>
-    request(`/insights/${id}/frequency-stability`),
-  getAnomalies: (id) => request(`/insights/${id}/anomalies`),
-  getLoadProfile: (id) => request(`/insights/${id}/load-profile`),
-  getHarmonicDistortion: (id) =>
-    request(`/insights/${id}/harmonic-distortion`),
-  getDailyLoadCurve: (id) => request(`/insights/${id}/daily-load-curve`),
-  getCapacityUtilization: (id, ratedCapacity) =>
-    request(
-      `/insights/${id}/capacity-utilization${
-        ratedCapacity ? `?ratedCapacity=${ratedCapacity}` : ''
-      }`
-    ),
+  getEnergyCost: (id, unitPrice, range = {}) => {
+    const q = new URLSearchParams();
+    q.set('unitPrice', String(unitPrice ?? 0));
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    return request(`/insights/${id}/energy-cost?${q}`);
+  },
+  getPowerFactor: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/power-factor${qs ? `?${qs}` : ''}`);
+  },
+  getPhaseImbalance: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/phase-imbalance${qs ? `?${qs}` : ''}`);
+  },
+  getVoltageStability: (id, nominalVoltage, range = {}) => {
+    const q = new URLSearchParams();
+    if (nominalVoltage != null) q.set('nominalVoltage', String(nominalVoltage));
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    return request(`/insights/${id}/voltage-stability?${q}`);
+  },
+  getReactivePower: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/reactive-power${qs ? `?${qs}` : ''}`);
+  },
+  getFrequencyStability: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/frequency-stability${qs ? `?${qs}` : ''}`);
+  },
+  getAnomalies: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/anomalies${qs ? `?${qs}` : ''}`);
+  },
+  getLoadProfile: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/load-profile${qs ? `?${qs}` : ''}`);
+  },
+  getHarmonicDistortion: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/harmonic-distortion${qs ? `?${qs}` : ''}`);
+  },
+  getDailyLoadCurve: (id, range = {}) => {
+    const q = new URLSearchParams();
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    const qs = q.toString();
+    return request(`/insights/${id}/daily-load-curve${qs ? `?${qs}` : ''}`);
+  },
+  getCapacityUtilization: (id, ratedCapacity, range = {}) => {
+    const q = new URLSearchParams();
+    if (ratedCapacity != null) q.set('ratedCapacity', String(ratedCapacity));
+    if (range.from) q.set('from', range.from);
+    if (range.to) q.set('to', range.to);
+    return request(`/insights/${id}/capacity-utilization?${q}`);
+  },
   getAlertsTimeline: (id, opts = {}) => {
     const q = new URLSearchParams();
     if (opts.from) q.set('from', opts.from);

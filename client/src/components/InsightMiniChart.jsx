@@ -12,6 +12,7 @@ import {
   CartesianGrid,
   Tooltip
 } from 'recharts';
+import { Maximize2 } from 'lucide-react';
 
 function formatTick(ts) {
   const d = new Date(ts);
@@ -27,11 +28,12 @@ function formatTick(ts) {
  * @param {number} [height]
  * @param {string} [yLabel]
  */
-export function InsightMiniChart({ series, yKey, color, highlight, height = 132, yLabel }) {
+export function InsightMiniChart({ series, yKey, color, highlight, height = 132, yLabel, onExpand }) {
   const data = useMemo(() => {
     if (!Array.isArray(series) || series.length === 0) return [];
     return series.map((row) => {
-      const ts = new Date(row.bucket).getTime();
+      const raw = row.bucket ?? row.timestamp;
+      const ts = new Date(raw).getTime();
       return {
         ...row,
         _x: ts,
@@ -45,7 +47,17 @@ export function InsightMiniChart({ series, yKey, color, highlight, height = 132,
   }
 
   return (
-    <div className="w-full mt-2 -ml-1">
+    <div className="relative w-full mt-2 -ml-1">
+      {typeof onExpand === 'function' && (
+        <button
+          type="button"
+          onClick={onExpand}
+          className="absolute top-0 right-0 z-10 p-1.5 rounded-md border border-grid-700/80 bg-white/90 text-grid-600 hover:text-cyan-electric hover:border-cyan-electric/40 shadow-sm cursor-pointer"
+          aria-label="Expand chart"
+        >
+          <Maximize2 size={14} />
+        </button>
+      )}
       <ResponsiveContainer width="100%" height={height}>
         <ComposedChart data={data} margin={{ top: 6, right: 8, left: 0, bottom: 2 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(15,23,42,0.08)" />
@@ -101,7 +113,7 @@ export function percentileHighAp(rows, p = 0.92) {
 }
 
 /** @param {{ curve: { hour: number; avgDemandW: number; sampleCount: number }[] }} dailyLoadCurve */
-export function InsightHourlyBarChart({ dailyLoadCurve, height = 140 }) {
+export function InsightHourlyBarChart({ dailyLoadCurve, height = 140, onExpand }) {
   const data = dailyLoadCurve?.curve?.length
     ? dailyLoadCurve.curve.filter((e) => e.sampleCount > 0)
     : [];
@@ -110,7 +122,17 @@ export function InsightHourlyBarChart({ dailyLoadCurve, height = 140 }) {
   }
   const peakHour = dailyLoadCurve.peakHourUTC;
   return (
-    <div className="w-full mt-2">
+    <div className="relative w-full mt-2">
+      {typeof onExpand === 'function' && (
+        <button
+          type="button"
+          onClick={onExpand}
+          className="absolute top-0 right-0 z-10 p-1.5 rounded-md border border-grid-700/80 bg-white/90 text-grid-600 hover:text-cyan-electric hover:border-cyan-electric/40 shadow-sm cursor-pointer"
+          aria-label="Expand chart"
+        >
+          <Maximize2 size={14} />
+        </button>
+      )}
       <ResponsiveContainer width="100%" height={height}>
         <BarChart data={data} margin={{ top: 6, right: 8, left: 0, bottom: 2 }}>
           <CartesianGrid strokeDasharray="3 3" stroke="rgba(15,23,42,0.08)" />

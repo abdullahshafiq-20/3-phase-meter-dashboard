@@ -9,7 +9,11 @@ description = "Microservice for simulating 3-phase meter telemetry"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
+    "fastapi",
+    "uvicorn",
     "paho-mqtt>=2.1.0",
-    "python-dotenv>=1.1.0",
-    "Flask>=3.0.0"
+    "python-dotenv>=1.1.0"
 ]
+
+[tool.setuptools]
+py-modules = ["main", "meter_simulator", "bulk_publish"]

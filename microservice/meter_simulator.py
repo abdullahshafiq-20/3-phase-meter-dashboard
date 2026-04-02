@@ -5,19 +5,17 @@ that match the thresholds in alertService.js.
 
 Part of the live pipeline:  python meter_simulator.py
 
-The simulator reads the last row per device from the CSV (if present) to seed
-the cumulative energy counter `e` so live readings continue smoothly from
-historical data.
+The simulator subscribes to the topic at startup to receive the last retained
+message per device to seed the cumulative energy counter `e` so live readings
+continue smoothly from historical data.
 
 Optional CLI flags:
     --interval <secs>    Seconds between each publish (default: 10)
     --devices <list>     Comma-separated device IDs (default: DEVICE_IDS from .env)
     --fault-chance <0-1> Probability per tick that a fault scenario fires (default: 0.15)
-    --csv <path>         Path to telemetry_export.csv for seeding `e` (default: CSV_PATH from .env)
 """
 
 import argparse
-import csv
 import json
 import os
 import random
@@ -36,7 +34,6 @@ PORT = int(os.getenv("HIVE_MQ_PORT", "8883"))
 USERNAME = os.getenv("HIVE_MQ_USERNAME", "")
 PASSWORD = os.getenv("HIVE_MQ_PASSWORD", "")
 ENV_DEVICE_IDS = os.getenv("DEVICE_IDS", "")
-DEFAULT_CSV = os.getenv("CSV_PATH", "telemetry_export.csv")
 
 TOPIC_LIVE = "meter/live/{deviceid}"
 TOPIC_HISTORICAL = "meter/historical/{deviceid}"
@@ -48,24 +45,6 @@ def clamp(v, lo, hi):
 
 def jitter(base, spread):
     return base + (random.random() * 2 - 1) * spread
-
-
-def read_last_rows_from_csv(csv_path, device_ids):
-    """Read the CSV and return the last row for each requested device."""
-    last_by_device = {}
-    if not csv_path or not os.path.isfile(csv_path):
-        return last_by_device
-    wanted = set(device_ids)
-    try:
-        with open(csv_path, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                did = row.get("deviceid", "")
-                if did in wanted:
-                    last_by_device[did] = row
-    except Exception as exc:
-        print(f"Warning: could not read CSV for seeding: {exc}")
-    return last_by_device
 
 
 # ── per-device state ─────────────────────────────────────────────────
@@ -87,7 +66,7 @@ class MeterState:
             raw_pf = float(seed_row.get("pf", 0.95) or 0.95)
             self.pf = abs(raw_pf) if abs(raw_pf) > 0 else 0.95
             self.f = float(seed_row.get("f", 50.0) or 50.0)
-            print(f"  {device_id}: seeded from CSV  e={self.e:.2f}  va={self.va:.1f}")
+            print(f"  {device_id}: seeded from MQTT  e={self.e:.2f}  va={self.va:.1f}")
         else:
             self.e = random.uniform(5000, 15000)
             self.va = random.uniform(228, 232)
@@ -245,8 +224,6 @@ def main():
                         help="Comma-separated device IDs (default: DEVICE_IDS from .env)")
     parser.add_argument("--fault-chance", type=float, default=0.15,
                         help="Probability per tick of injecting a fault (default: 0.15)")
-    parser.add_argument("--csv", default=DEFAULT_CSV,
-                        help="Path to CSV for seeding energy values (default: CSV_PATH from .env)")
     parser.add_argument(
         "--publish-topic",
         choices=["historical", "live"],
@@ -263,11 +240,6 @@ def main():
 
     print(f"Devices: {device_ids}")
     print(f"Interval: {args.interval}s   Fault chance: {args.fault_chance * 100:.0f}%")
-
-    # Seed from CSV
-    print(f"Reading CSV for energy seed values: {args.csv}")
-    seed_rows = read_last_rows_from_csv(args.csv, device_ids)
-    meters = {did: MeterState(did, seed_rows.get(did)) for did in device_ids}
 
     print(f"\nConnecting to {BROKER}:{PORT} ...")
 
@@ -309,6 +281,31 @@ def main():
         client.loop_stop()
         sys.exit(1)
 
+    # Fetch seeds from broker
+    print("Fetching seed values from broker (reading retained messages)...")
+    seed_rows = {}
+    def on_seed_message(c, userdata, msg):
+        try:
+            payload = json.loads(msg.payload.decode())
+            did = payload.get("deviceid")
+            if did and did in device_ids:
+                seed_rows[did] = payload
+        except Exception:
+            pass
+
+    client.on_message = on_seed_message
+    topic_filter = TOPIC_HISTORICAL.format(deviceid="+") if args.publish_topic == "historical" else TOPIC_LIVE.format(deviceid="+")
+    client.subscribe(topic_filter)
+    
+    # Wait up to 3 seconds for retained messages to arrive
+    time.sleep(3)
+    
+    client.unsubscribe(topic_filter)
+    client.on_message = None
+
+    # Initialize meters
+    meters = {did: MeterState(did, seed_rows.get(did)) for did in device_ids}
+
     print("Simulator running — press Ctrl+C to stop\n")
 
     try:
@@ -324,8 +321,8 @@ def main():
 
                 reading = meter.build_reading()
                 topic = (TOPIC_HISTORICAL if args.publish_topic == "historical" else TOPIC_LIVE).format(deviceid=did)
-                # For streaming data we DO NOT retain; retention would overwrite the topic with only the last message.
-                client.publish(topic, json.dumps(reading), qos=1, retain=False)
+                # Using retain=True so that restarting the script can fetch the last values as seed
+                client.publish(topic, json.dumps(reading), qos=1, retain=True)
 
                 tag = f"  ** FAULT: {fault_name}" if fault_name else ""
                 print(

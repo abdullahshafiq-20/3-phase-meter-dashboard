@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meter-dashboard-microservice"
+version = "0.1.0"
+description = "Microservice for simulating 3-phase meter telemetry"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "paho-mqtt>=2.1.0",
+    "python-dotenv>=1.1.0",
+    "Flask>=3.0.0"
+]
